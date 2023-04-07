@@ -50,6 +50,7 @@ impl<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> Iterator
             return None;
         }
         self.buffer_in_use = true;
+        *self.buffer = [0; 2 * BYTES];
         let (data_stub, _) = self.buffer.split_at_mut(self.cursor.len());
         data_stub.copy_from_slice(self.cursor);
         // This is instant UB, but I don't know how to fix this.
