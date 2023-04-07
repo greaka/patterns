@@ -1,13 +1,6 @@
-#![no_std]
-
 use core::{slice, str::from_utf8};
 
 use patterns::{Pattern, BYTES};
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
 
 /// # Safety
 /// `len` must be a valid length of `pat`. On success, `res` will not be null.
