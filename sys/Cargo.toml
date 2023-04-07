@@ -8,6 +8,7 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+strip = true
 
 [lib]
 crate-type = ["cdylib"]
