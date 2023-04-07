@@ -9,9 +9,6 @@ use core::{
     str::FromStr,
 };
 
-#[cfg(not(feature = "64bytes"))]
-const BYTES: usize = 32;
-#[cfg(feature = "64bytes")]
 const BYTES: usize = 64;
 
 pub struct Scanner<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> {

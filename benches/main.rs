@@ -7,7 +7,7 @@ const WILDCARD_PREFIX_PATTERN: &str = "? ? ?. 01 01 01 01 01";
 
 fn avx(b: &mut Bencher, pattern: &Pattern, data: &[u8]) {
     b.iter(move || {
-        let mut buffer = [0; 64];
+        let mut buffer = [0; 128];
         pattern.matches(data, &mut buffer).next().unwrap();
     });
 }
