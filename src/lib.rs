@@ -9,7 +9,7 @@ use core::{
     str::FromStr,
 };
 
-const BYTES: usize = 64;
+pub const BYTES: usize = 64;
 
 pub struct Scanner<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> {
     pattern: &'pattern Pattern,
