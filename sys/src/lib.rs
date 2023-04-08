@@ -17,12 +17,13 @@ pub unsafe extern "C" fn parse_pattern(pat: *const u8, len: usize, res: *mut Pat
 }
 
 /// # Safety
+/// `pat` needs to be aligned to [`patterns::BYTES`] bytes! By default 64.
 /// `len` must be the number of bytes of `data`. `res` must hold at least
 /// `8 * number of results` bytes. The number required is unknown.
 /// On success, `*num_res` will not be null.
 #[no_mangle]
 pub unsafe extern "C" fn match_pattern(
-    pat: *mut Pattern,
+    pat: *const Pattern,
     data: *const u8,
     len: usize,
     res: *mut usize,
@@ -37,6 +38,34 @@ pub unsafe extern "C" fn match_pattern(
     let scan = pattern.matches(data, &mut buf);
     for (index, found) in scan.enumerate() {
         *res.add(index) = found;
-        *num_res = index;
+        *num_res = index + 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn sanity() {
+        let pattern = "01 01 01 01 01 01 01 01";
+        let mut data = vec![0u8; 1_000_000];
+        let len = data.len();
+        data[len - 8..].fill(1);
+        let mut res: Pattern = unsafe { core::mem::zeroed() };
+        let mut results = [0usize; 1];
+        let mut num_results = 0usize;
+        unsafe {
+            parse_pattern(pattern.as_bytes().as_ptr(), pattern.len(), &mut res as _);
+            match_pattern(
+                &res as _,
+                data.as_ptr() as _,
+                data.len(),
+                &mut results as _,
+                &mut num_results as _,
+            );
+        }
+        assert_eq!(num_results, 1);
+        assert_eq!(results[0], data.len() - 8);
     }
 }

@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
-use patterns::Pattern;
+use patterns::{Pattern, BYTES};
 
 const PLAIN_PATTERN: &str = "01 01 01 01 01 01 01 01";
 const WILDCARD_PATTERN: &str = "01 01 ?? 01 . 01 01 01";
@@ -7,7 +7,7 @@ const WILDCARD_PREFIX_PATTERN: &str = "? ? ?. 01 01 01 01 01";
 
 fn avx(b: &mut Bencher, pattern: &Pattern, data: &[u8]) {
     b.iter(move || {
-        let mut buffer = [0; 128];
+        let mut buffer = [0; 2 * BYTES];
         pattern.matches(data, &mut buffer).next().unwrap();
     });
 }

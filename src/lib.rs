@@ -4,7 +4,6 @@
 use core::{
     num::ParseIntError,
     ops::BitAnd,
-    ptr,
     simd::{Mask, Simd, SimdPartialEq, ToBitMask},
     str::FromStr,
 };
@@ -16,6 +15,7 @@ pub struct Scanner<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> 
     data: &'data [u8],
     cursor: &'cursor [u8],
     buffer: &'buffer mut [u8; 2 * BYTES],
+    position: usize,
     buffer_in_use: bool,
 }
 
@@ -33,6 +33,7 @@ impl<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor>
             cursor: data,
             buffer,
             buffer_in_use: false,
+            position: 0,
         }
     }
 }
@@ -43,23 +44,25 @@ impl<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> Iterator
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
-            return Some(index);
+        loop {
+            if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
+                return Some(self.position + index);
+            }
+            if self.buffer_in_use {
+                return None;
+            }
+            self.buffer_in_use = true;
+            *self.buffer = [0; 2 * BYTES];
+            self.position +=
+                unsafe { self.cursor.as_ptr().offset_from(self.data.as_ptr()) as usize };
+            let (data_stub, _) = self.buffer.split_at_mut(self.cursor.len());
+            data_stub.copy_from_slice(self.cursor);
+            // This is instant UB, but I don't know how to fix this.
+            // This is UB because we violate aliasing and extend the lifetime.
+            // self.buffer is a mutable reference while self.data is an immutable reference.
+            self.cursor = unsafe { &*(self.buffer as *const [u8]) };
+            self.data = unsafe { &*(self.buffer as *const [u8]) };
         }
-        if self.buffer_in_use {
-            return None;
-        }
-        self.buffer_in_use = true;
-        *self.buffer = [0; 2 * BYTES];
-        let (data_stub, _) = self.buffer.split_at_mut(self.cursor.len());
-        data_stub.copy_from_slice(self.cursor);
-        // This is instant UB, but I don't know how to fix this.
-        // This is UB because we violate aliasing and extend the lifetime.
-        // self.buffer is a mutable reference while self.data is an immutable reference.
-        let ptr = ptr::slice_from_raw_parts(self.buffer.as_ptr(), self.buffer.len());
-        self.data = unsafe { &*ptr };
-        self.cursor = unsafe { &*ptr };
-        find_in_buffer(self.pattern, self.data, &mut self.cursor)
     }
 }
 
