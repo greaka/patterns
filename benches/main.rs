@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
-use patterns::{Pattern, BYTES};
+use patterns::Pattern;
 
 const PLAIN_PATTERN: &str = "01 01 01 01 01 01 01 01";
 const WILDCARD_PATTERN: &str = "01 01 ?? 01 . 01 01 01";
