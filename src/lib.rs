@@ -3,44 +3,36 @@
 
 use core::{
     num::ParseIntError,
-    ops::BitAnd,
+    ops::{BitAnd, Deref},
     simd::{Mask, Simd, SimdPartialEq, ToBitMask},
     str::FromStr,
 };
 
+/// Determines the LANES size. i.e.: register size;
+/// Every block of data is processed in chunks of `BYTES` bytes.
 pub const BYTES: usize = 64;
 
-pub struct Scanner<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> {
+pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
     pattern: &'pattern Pattern,
     data: &'data [u8],
     cursor: &'cursor [u8],
-    buffer: &'buffer mut [u8; 2 * BYTES],
     position: usize,
-    buffer_in_use: bool,
+    buffer: Buffer,
 }
 
-impl<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor>
-    Scanner<'pattern, 'data, 'cursor, 'buffer>
-{
-    pub fn new(
-        pattern: &'pattern Pattern,
-        data: &'data [u8],
-        buffer: &'buffer mut [u8; 2 * BYTES],
-    ) -> Scanner<'pattern, 'data, 'cursor, 'buffer> {
+impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
+    pub fn new(pattern: &'pattern Pattern, data: &'data [u8]) -> Scanner<'pattern, 'data, 'cursor> {
         Scanner {
             pattern,
             data,
             cursor: data,
-            buffer,
-            buffer_in_use: false,
+            buffer: Buffer::new(),
             position: 0,
         }
     }
 }
 
-impl<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> Iterator
-    for Scanner<'pattern, 'data, 'cursor, 'buffer>
-{
+impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'cursor> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -48,20 +40,28 @@ impl<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor> Iterator
             if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
                 return Some(self.position + index);
             }
-            if self.buffer_in_use {
+            if self.buffer.in_use() {
                 return None;
             }
-            self.buffer_in_use = true;
-            *self.buffer = [0; 2 * BYTES];
-            self.position +=
-                unsafe { self.cursor.as_ptr().offset_from(self.data.as_ptr()) as usize };
-            let (data_stub, _) = self.buffer.split_at_mut(self.cursor.len());
-            data_stub.copy_from_slice(self.cursor);
-            // This is instant UB, but I don't know how to fix this.
-            // This is UB because we violate aliasing and extend the lifetime.
-            // self.buffer is a mutable reference while self.data is an immutable reference.
-            self.cursor = unsafe { &*(self.buffer as *const [u8]) };
-            self.data = unsafe { &*(self.buffer as *const [u8]) };
+            self.copy_to_buffer();
+        }
+    }
+}
+
+impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
+    fn copy_to_buffer(&mut self) {
+        self.save_position();
+        self.buffer.copy(self.cursor);
+        // This is instant UB, but I don't know how to fix this.
+        // This is UB because we violate aliasing and extend the lifetime.
+        // self.buffer is a mutable reference while self.data is an immutable reference.
+        self.cursor = unsafe { &*(self.buffer.deref() as *const [u8]) };
+        self.data = unsafe { &*(self.buffer.deref() as *const [u8]) };
+    }
+
+    fn save_position(&mut self) {
+        unsafe {
+            self.position = self.cursor.as_ptr().offset_from(self.data.as_ptr()) as usize;
         }
     }
 }
@@ -109,12 +109,11 @@ impl Pattern {
         pattern.parse().unwrap()
     }
 
-    pub fn matches<'pattern, 'data: 'cursor, 'cursor, 'buffer: 'data + 'cursor>(
+    pub fn matches<'pattern, 'data: 'cursor, 'cursor>(
         &'pattern self,
         data: &'data [u8],
-        buffer: &'buffer mut [u8; 2 * BYTES],
-    ) -> Scanner<'pattern, 'data, 'cursor, 'buffer> {
-        Scanner::new(self, data, buffer)
+    ) -> Scanner<'pattern, 'data, 'cursor> {
+        Scanner::new(self, data)
     }
 }
 
@@ -150,6 +149,43 @@ impl FromStr for Pattern {
             wildcard_prefix,
             first_byte,
         })
+    }
+}
+
+struct Buffer {
+    // 3 * BYTES = 1x for rest of the data, 1x to not overrun,
+    // 1x for weird patterns with a lot of prefix wildcards
+    inner: [u8; 3 * BYTES],
+    in_use: bool,
+}
+
+impl Buffer {
+    pub(crate) fn new() -> Self {
+        Self {
+            in_use: false,
+            inner: [0u8; 3 * BYTES],
+        }
+    }
+
+    pub(crate) fn copy(&mut self, data: &[u8]) {
+        if self.in_use {
+            panic!("buffer reused");
+        }
+        self.in_use = true;
+        let (data_stub, _) = self.inner.split_at_mut(data.len());
+        data_stub.copy_from_slice(data);
+    }
+
+    pub(crate) fn in_use(&self) -> bool {
+        self.in_use
+    }
+}
+
+impl Deref for Buffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 

@@ -1,6 +1,6 @@
 use core::{slice, str::from_utf8};
 
-use patterns::{Pattern, BYTES};
+use patterns::Pattern;
 
 /// # Safety
 /// `len` must be a valid length of `pat`. On success, `res` will not be null.
@@ -34,8 +34,7 @@ pub unsafe extern "C" fn match_pattern(
     }
     let data = slice::from_raw_parts(data, len);
     let pattern = &*pat;
-    let mut buf = [0; 2 * BYTES];
-    let scan = pattern.matches(data, &mut buf);
+    let scan = pattern.matches(data);
     for (index, found) in scan.enumerate() {
         *res.add(index) = found;
         *num_res = index + 1;
