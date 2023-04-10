@@ -198,6 +198,10 @@ impl FromStr for Pattern {
         }
 
         let wildcard_prefix = mask.iter().take_while(|&&x| !x).count();
+        if wildcard_prefix == BYTES {
+            return Err(ParsePatternError::MissingNonWildcardByte);
+        }
+
         let first_byte = Simd::from_array([buffer[wildcard_prefix]; BYTES]);
 
         Ok(Self {
@@ -250,6 +254,7 @@ impl Deref for Buffer {
 pub enum ParsePatternError {
     PatternTooLong,
     InvalidHexNumber(ParseIntError),
+    MissingNonWildcardByte,
 }
 
 impl From<ParseIntError> for ParsePatternError {
