@@ -23,6 +23,7 @@ fn trailing_zero() {
     assert_eq!(simple("42 00", &[0x42]), &[]);
 }
 
+// duplicated in benches/main.rs
 pub fn xxh3_data(length: usize) -> Vec<u8> {
     (0..length.div_ceil(8))
         .flat_map(|i| xxh3::xxh3_64(&i.to_be_bytes()).to_be_bytes())
