@@ -18,7 +18,10 @@
 //! ```
 
 #![feature(portable_simd)]
-#![no_std]
+#![cfg_attr(not(test), no_std)]
+
+#[cfg(test)]
+mod tests;
 
 use core::{
     num::ParseIntError,
@@ -60,8 +63,12 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
+        let orig_len = self.data.len();
         loop {
             if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
+                if self.buffer.in_use() && self.position + index + self.pattern.length > orig_len {
+                    return None;
+                }
                 return Some(self.position + index);
             }
             // `find_in_buffer` can only check `BYTES` amount of bytes at once, no less.
@@ -143,12 +150,13 @@ fn find_in_buffer(pattern: &Pattern, data: &[u8], cursor: &mut &[u8]) -> Option<
 }
 
 /// A prepared pattern
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Pattern {
     pub(crate) bytes: Simd<u8, BYTES>,
     pub(crate) mask: Mask<i8, BYTES>,
-    pub(crate) wildcard_prefix: usize,
     pub(crate) first_byte: Simd<u8, BYTES>,
+    pub(crate) wildcard_prefix: usize,
+    pub(crate) length: usize,
 }
 
 impl Pattern {
@@ -207,8 +215,9 @@ impl FromStr for Pattern {
         Ok(Self {
             bytes: Simd::from_array(buffer),
             mask: Mask::from_array(mask),
-            wildcard_prefix,
             first_byte,
+            wildcard_prefix,
+            length,
         })
     }
 }
