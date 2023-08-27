@@ -66,10 +66,11 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
         let orig_len = self.data.len();
         loop {
             if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
-                if self.buffer.in_use() && self.position + index + self.pattern.length > orig_len {
+                let index = index + self.position;
+                if self.buffer.in_use() && index + self.pattern.length > orig_len {
                     return None;
                 }
-                return Some(self.position + index);
+                return Some(index);
             }
             // `find_in_buffer` can only check `BYTES` amount of bytes at once, no less.
             // It returns `None` if it ran out of space in data to look for matches.

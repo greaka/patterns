@@ -69,6 +69,19 @@ fn small() {
     // uneven tail
     assert_eq!(simple("c2", &data[..=0x37]), &[0x28, 0x37]);
     assert_eq!(simple("14 53 22 e9 63", &data[..=0x37]), &[0x31]);
+
+    // double
+    let data2 = data.repeat(2);
+    assert_eq!(simple("c7 7b", &data2), &[0, 64]);
+    assert_eq!(simple("c7 7b ?", &data2), &[0, 64]);
+    assert_eq!(simple("? c7 7b", &data2), &[63]);
+    assert_eq!(simple("f3", &data2), &[0x08, 0x0F, 0x48, 0x4F]);
+    assert_eq!(simple("f3 ? 4a", &data2), &[0x08, 0x48]);
+    assert_eq!(simple("f3 ? 69", &data2), &[0x0F, 0x4F]);
+    assert_eq!(simple("c2", &data2), &[0x28, 0x37, 0x68, 0x77]);
+    assert_eq!(simple("c2 ? ? 5e", &data2), &[0x28, 0x68]);
+    assert_eq!(simple("c2 ? ? 12", &data2), &[0x37, 0x77]);
+    assert_eq!(simple("14 53 22 e9 63", &data2), &[0x31, 0x71]);
 }
 
 #[test]
