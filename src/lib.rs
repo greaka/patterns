@@ -151,6 +151,9 @@ fn find_in_buffer(
             *first_byte &= !(1 << offset);
 
             if cursor.len() - offset < BYTES {
+                // Make sure we don't repeat values matched earlier in this SIMD slice
+                // i.e. during previous iterations of this while loop
+                *cursor = &cursor[offset..];
                 return None;
             }
 

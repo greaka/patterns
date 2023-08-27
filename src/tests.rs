@@ -48,6 +48,14 @@ fn xxh3_data_test() {
 }
 
 #[test]
+fn repeat_across_buffer() {
+    let mut data = [0_u8; 64];
+    data[0] = 1;
+    data[1] = 1;
+    assert_eq!(simple("01", &data), [0, 1]);
+}
+
+#[test]
 fn small() {
     //    00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F
     // 0x c7 7b 3a bb 6f 87 ac d9 f3 6b 4a 1a 44 f7 8b f3
