@@ -92,8 +92,6 @@ fn small() {
     assert_eq!(simple("c2", &data2[..=0x77]), &[0x28, 0x37, 0x68, 0x77]);
     assert_eq!(simple("14 53 22 e9 63", &data2[..=0x77]), &[0x31, 0x71]);
 
-#[test]
-fn prefix_wildcard_across_block() {
-    let data = xxh3_data(64).repeat(2);
-    assert_eq!(simple("?? c7 7b 3a bb 6f", &data), &[0x3F]);
+    // wildcard beyond the end, 2nd iterator call
+    assert_eq!(simple("6b ?? ?? ?? ?? ??", &data2), &[0x09, 0x3B, 0x49]);
 }

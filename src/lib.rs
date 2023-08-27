@@ -37,6 +37,7 @@ pub const BYTES: usize = 64;
 /// An iterator for searching a given pattern in data
 pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
     pattern: &'pattern Pattern,
+    data_len: usize,
     data: &'data [u8],
     cursor: &'cursor [u8],
     position: usize,
@@ -51,6 +52,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     pub fn new(pattern: &'pattern Pattern, data: &'data [u8]) -> Scanner<'pattern, 'data, 'cursor> {
         Scanner {
             pattern,
+            data_len: data.len(),
             data,
             cursor: data,
             buffer: Buffer::new(),
@@ -65,7 +67,6 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let orig_len = self.data.len();
         loop {
             if let Some(index) = find_in_buffer(
                 self.pattern,
@@ -74,7 +75,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
                 &mut self.first_byte,
             ) {
                 let index = index + self.position;
-                if self.buffer.in_use() && index + self.pattern.length > orig_len {
+                if self.buffer.in_use() && index + self.pattern.length > self.data_len {
                     return None;
                 }
                 return Some(index);
