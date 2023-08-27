@@ -2,6 +2,7 @@ use super::*;
 use xxhash_rust::xxh3;
 
 fn simple(pattern: &str, data: &[u8]) -> Vec<usize> {
+    dbg!(pattern);
     pattern.parse::<Pattern>().unwrap().matches(data).collect()
 }
 
@@ -10,6 +11,12 @@ fn basic() {
     assert_eq!(simple("42", &[0x42]), &[0]);
     assert_eq!(simple("24", &[0x42]), &[]);
     assert_eq!(simple("42", &[0x42; 2]), &[0, 1]);
+}
+
+#[test]
+fn leading_wildcard() {
+    assert_eq!(simple("? 42", &[0x42]), &[]);
+    assert_eq!(simple("? 42", &[0x22, 0x42]), &[0]);
 }
 
 #[test]
