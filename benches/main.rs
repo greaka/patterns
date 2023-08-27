@@ -23,6 +23,29 @@ fn avx(b: &mut Bencher, pattern: &Pattern, data: &[u8]) {
     });
 }
 
+#[allow(unused)]
+fn xxh_alignment(c: &mut Criterion) {
+    let data = xxh3_data(1_000_032);
+    // at position 500_000
+    #[rustfmt::skip]
+    let mid_1: Pattern = r#"e8 22 77 4d 4b 54 96 10 08 b7 61 e5 d6 54 94 5d e0 b0 c0 32 90 ec 85 c0 78 f3 43 2b"#.parse().unwrap();
+
+    let mut group = c.benchmark_group("xxh_align");
+    for offset in 0..16usize {
+        group.bench_with_input(
+            criterion::BenchmarkId::from_parameter(offset),
+            &offset,
+            |b, i: &usize| {
+                let data = &data[offset..(data.len() - (64 - offset))];
+                assert_eq!(data.len(), 1_000_032 - 64);
+                avx(b, &mid_1, data);
+            },
+        );
+    }
+
+    group.finish();
+}
+
 #[rustfmt::skip]
 fn xxh_benchmark(c: &mut Criterion) {
     let data = xxh3_data(1_000_032);
@@ -57,5 +80,6 @@ fn trivial_benchmark(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, trivial_benchmark, xxh_benchmark);
-criterion_main!(benches);
+criterion_group!(align, xxh_alignment);
+criterion_group!(benches, xxh_benchmark, trivial_benchmark);
+criterion_main!(benches, align);
