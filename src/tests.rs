@@ -1,5 +1,6 @@
-use super::*;
 use xxhash_rust::xxh3;
+
+use super::*;
 
 fn simple(pattern: &str, data: &[u8]) -> Vec<usize> {
     dbg!(pattern);
@@ -68,4 +69,10 @@ fn small() {
     // uneven tail
     assert_eq!(simple("c2", &data[..=0x37]), &[0x28, 0x37]);
     assert_eq!(simple("14 53 22 e9 63", &data[..=0x37]), &[0x31]);
+}
+
+#[test]
+fn prefix_wildcard_across_block() {
+    let data = xxh3_data(64).repeat(2);
+    assert_eq!(simple("?? c7 7b 3a bb 6f", &data), &[0x3F]);
 }
