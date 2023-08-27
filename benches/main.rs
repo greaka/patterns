@@ -1,13 +1,16 @@
+use aligned_vec::{avec, AVec};
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
 use patterns::Pattern;
 use xxhash_rust::xxh3;
 
 // duplicated in src/tests.rs
-pub fn xxh3_data(length: usize) -> Vec<u8> {
-    (0..length.div_ceil(8))
-        .flat_map(|i| xxh3::xxh3_64(&i.to_be_bytes()).to_be_bytes())
-        .take(length)
-        .collect()
+pub fn xxh3_data(length: usize) -> AVec<u8> {
+    AVec::<u8>::from_iter(
+        64,
+        (0..length.div_ceil(8))
+            .flat_map(|i| xxh3::xxh3_64(&i.to_be_bytes()).to_be_bytes())
+            .take(length),
+    )
 }
 
 const PLAIN_PATTERN: &str = "01 01 01 01 01 01 01 01";
@@ -20,6 +23,7 @@ fn avx(b: &mut Bencher, pattern: &Pattern, data: &[u8]) {
     });
 }
 
+#[rustfmt::skip]
 fn xxh_benchmark(c: &mut Criterion) {
     let data = xxh3_data(1_000_032);
     // at position 500_000
@@ -39,7 +43,7 @@ fn xxh_benchmark(c: &mut Criterion) {
 }
 
 fn trivial_benchmark(c: &mut Criterion) {
-    let mut data = vec![0; 1_000_000];
+    let mut data = avec![0; 1_000_000];
     let len = data.len();
     data[len - 8..].fill(1);
     let plain_pattern: Pattern = PLAIN_PATTERN.parse().unwrap();
