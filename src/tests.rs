@@ -82,7 +82,15 @@ fn small() {
     assert_eq!(simple("c2 ? ? 5e", &data2), &[0x28, 0x68]);
     assert_eq!(simple("c2 ? ? 12", &data2), &[0x37, 0x77]);
     assert_eq!(simple("14 53 22 e9 63", &data2), &[0x31, 0x71]);
-}
+
+    // across block boundary
+    assert_eq!(simple("fa fc c7", &data2), &[0x3E]);
+    assert_eq!(simple("fc c7 7b", &data2), &[0x3F]);
+    assert_eq!(simple("fc ?? 7b", &data2), &[0x3F]);
+
+    // uneven tail
+    assert_eq!(simple("c2", &data2[..=0x77]), &[0x28, 0x37, 0x68, 0x77]);
+    assert_eq!(simple("14 53 22 e9 63", &data2[..=0x77]), &[0x31, 0x71]);
 
 #[test]
 fn prefix_wildcard_across_block() {
