@@ -40,6 +40,7 @@ pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
     data: &'data [u8],
     cursor: &'cursor [u8],
     position: usize,
+    first_byte: u64,
     buffer: Buffer,
 }
 
@@ -53,6 +54,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
             data,
             cursor: data,
             buffer: Buffer::new(),
+            first_byte: 0,
             position: 0,
         }
     }
@@ -65,7 +67,12 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
     fn next(&mut self) -> Option<Self::Item> {
         let orig_len = self.data.len();
         loop {
-            if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
+            if let Some(index) = find_in_buffer(
+                self.pattern,
+                self.data,
+                &mut self.cursor,
+                &mut self.first_byte,
+            ) {
                 let index = index + self.position;
                 if self.buffer.in_use() && index + self.pattern.length > orig_len {
                     return None;
@@ -90,6 +97,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     fn copy_to_buffer(&mut self) {
         self.save_position();
         self.buffer.copy_from(self.cursor);
+        self.first_byte = 0;
         // Safety:
         // This is instant UB, but I don't know how to fix this.
         // This is UB because we violate aliasing and extend the lifetime.
@@ -108,45 +116,59 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     }
 }
 
-fn find_in_buffer(pattern: &Pattern, data: &[u8], cursor: &mut &[u8]) -> Option<usize> {
+fn find_in_buffer(
+    pattern: &Pattern,
+    data: &[u8],
+    cursor: &mut &[u8],
+    first_byte: &mut u64,
+) -> Option<usize> {
     loop {
-        if cursor.len() < BYTES + pattern.wildcard_prefix {
-            break None;
+        if *first_byte == 0 {
+            if cursor.len() < BYTES {
+                break None;
+            }
+
+            let search = Simd::from_slice(cursor);
+            // Look for the first non wildcard byte.
+            *first_byte = search.simd_eq(pattern.first_byte).to_bitmask();
         }
 
-        // We can skip bytes that are wildcards.
-        let search = Simd::from_slice(&cursor[pattern.wildcard_prefix..]);
-        // Look for the first non wildcard byte.
-        let first_byte = search.simd_eq(pattern.first_byte).to_bitmask();
+        while *first_byte != 0 {
+            let offset = first_byte.trailing_zeros() as usize;
 
-        // If no match was found, shift by the amount of bytes we check at once and
-        // start over.
-        if first_byte == 0 {
-            *cursor = &cursor[BYTES..];
-            continue;
-        }
-        // ... else shift the cursor to match the first match.
-        *cursor = &cursor[first_byte.trailing_zeros() as usize..];
+            // Shift the cursor to not check the same data again.
+            *first_byte &= !(1 << offset);
 
-        if cursor.len() < BYTES {
-            break None;
+            // FIXME: breaks prefix wildcards across BYTES block boundaries
+            let Some(offset) = offset.checked_sub(pattern.wildcard_prefix) else {
+                continue;
+            };
+
+            if cursor.len() - offset < BYTES {
+                return None;
+            }
+
+            let search = Simd::from_slice(&cursor[offset..]);
+            // Check `BYTES` amount of bytes at the same time.
+            let result = search.simd_eq(pattern.bytes);
+            // Filter out results we are not interested in.
+            let filtered_result = result.bitand(pattern.mask);
+            // Save the position within data.
+            // Safety: This is fine because we make sure that cursor always points to data
+            let index = unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize + offset;
+
+            // Perform an equality check on all registers of the final result.
+            // Essentially this boils down to `result & mask == mask`
+            if filtered_result == pattern.mask {
+                if *first_byte == 0 {
+                    *cursor = &cursor[BYTES..];
+                }
+
+                return Some(index);
+            }
         }
 
-        let search = Simd::from_slice(cursor);
-        // Check `BYTES` amount of bytes at the same time.
-        let result = search.simd_eq(pattern.bytes);
-        // Filter out results we are not interested in.
-        let filtered_result = result.bitand(pattern.mask);
-        // Save the position within data.
-        // Safety: This is fine because we make sure that cursor always points to data
-        let index = unsafe { cursor.as_ptr().offset_from(data.as_ptr()) };
-        // Shift the cursor by one to not check the same data again.
-        *cursor = &cursor[1..];
-        // Perform an equality check on all registers of the final result.
-        // Essentially this boils down to `result & mask == mask`
-        if filtered_result == pattern.mask {
-            return Some(index as usize);
-        }
+        *cursor = &cursor[BYTES..];
     }
 }
 
