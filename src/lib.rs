@@ -139,23 +139,25 @@ fn find_in_buffer(
             // Shift the cursor to not check the same data again.
             *first_byte &= !(1 << offset);
 
-            // FIXME: breaks prefix wildcards across BYTES block boundaries
-            let Some(offset) = offset.checked_sub(pattern.wildcard_prefix) else {
-                continue;
-            };
-
             if cursor.len() - offset < BYTES {
                 return None;
             }
+
+            // Save the position within data.
+            // Safety: This is fine because we make sure that cursor always points to data
+            let Some(index) = (unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize
+                + offset)
+                .checked_sub(pattern.wildcard_prefix)
+            else {
+                // matched too early -- wildcard prefix is before the start
+                continue;
+            };
 
             let search = Simd::from_slice(&cursor[offset..]);
             // Check `BYTES` amount of bytes at the same time.
             let result = search.simd_eq(pattern.bytes);
             // Filter out results we are not interested in.
             let filtered_result = result.bitand(pattern.mask);
-            // Save the position within data.
-            // Safety: This is fine because we make sure that cursor always points to data
-            let index = unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize + offset;
 
             // Perform an equality check on all registers of the final result.
             // Essentially this boils down to `result & mask == mask`
@@ -208,32 +210,40 @@ impl FromStr for Pattern {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const WILDCARD: u8 = b'.';
+        /// allows . and ? as wildcard and only considers the first character
+        fn is_wildcard(byte: &str) -> bool {
+            const WILDCARD: u8 = b'.';
+            byte.as_bytes()[0] & WILDCARD == WILDCARD
+        }
 
-        let length = s.split_ascii_whitespace().count();
+        let bytes = s.split_ascii_whitespace();
+
+        // count and skip over prefix wildcards
+        let wildcard_prefix = bytes.clone().take_while(|x| is_wildcard(*x)).count();
+        let bytes = bytes.skip(wildcard_prefix);
+
+        let length = bytes.clone().count();
         if length > BYTES {
             return Err(ParsePatternError::PatternTooLong);
         }
 
-        let bytes = s.split_ascii_whitespace();
         let mut buffer = [0_u8; BYTES];
         let mut mask = [false; BYTES];
 
         for (index, byte) in bytes.enumerate() {
-            // allows . and ? as wildcard and only considers the first character
-            if byte.as_bytes()[0] & WILDCARD == WILDCARD {
+            if is_wildcard(byte) {
                 continue;
             }
             buffer[index] = u8::from_str_radix(byte, 16)?;
             mask[index] = true;
         }
 
-        let wildcard_prefix = mask.iter().take_while(|&&x| !x).count();
-        if wildcard_prefix == BYTES {
+        // since prefix wildcards were skipped, the first byte must be non-wildcard
+        if !mask[0] {
             return Err(ParsePatternError::MissingNonWildcardByte);
         }
 
-        let first_byte = Simd::from_array([buffer[wildcard_prefix]; BYTES]);
+        let first_byte = Simd::from_array([buffer[0]; BYTES]);
 
         Ok(Self {
             bytes: Simd::from_array(buffer),
