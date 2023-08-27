@@ -131,6 +131,16 @@ fn find_in_buffer(
             let search = Simd::from_slice(cursor);
             // Look for the first non wildcard byte.
             *first_byte = search.simd_eq(pattern.first_byte).to_bitmask();
+
+            #[cfg(feature = "second_byte")]
+            if pattern.second_byte_offset != 0
+                && cursor.len() - pattern.second_byte_offset >= BYTES
+                && *first_byte != 0
+            {
+                let search2 = Simd::from_slice(&cursor[pattern.second_byte_offset..]);
+                let second_byte = search2.simd_eq(pattern.second_byte).to_bitmask();
+                *first_byte &= second_byte;
+            }
         }
 
         while *first_byte != 0 {
@@ -180,6 +190,10 @@ pub struct Pattern {
     pub(crate) bytes: Simd<u8, BYTES>,
     pub(crate) mask: Mask<i8, BYTES>,
     pub(crate) first_byte: Simd<u8, BYTES>,
+    #[cfg(feature = "second_byte")]
+    pub(crate) second_byte: Simd<u8, BYTES>,
+    #[cfg(feature = "second_byte")]
+    pub(crate) second_byte_offset: usize,
     pub(crate) wildcard_prefix: usize,
     pub(crate) length: usize,
 }
@@ -219,7 +233,7 @@ impl FromStr for Pattern {
         let bytes = s.split_ascii_whitespace();
 
         // count and skip over prefix wildcards
-        let wildcard_prefix = bytes.clone().take_while(|x| is_wildcard(*x)).count();
+        let wildcard_prefix = bytes.clone().take_while(|x| is_wildcard(x)).count();
         let bytes = bytes.skip(wildcard_prefix);
 
         let length = bytes.clone().count();
@@ -245,10 +259,24 @@ impl FromStr for Pattern {
 
         let first_byte = Simd::from_array([buffer[0]; BYTES]);
 
+        #[cfg(feature = "second_byte")]
+        let second_byte_offset = mask
+            .iter()
+            .skip(1)
+            .position(|x| *x)
+            .map(|x| x + 1)
+            .unwrap_or(0);
+        #[cfg(feature = "second_byte")]
+        let second_byte = Simd::from_array([buffer[second_byte_offset]; BYTES]);
+
         Ok(Self {
             bytes: Simd::from_array(buffer),
             mask: Mask::from_array(mask),
             first_byte,
+            #[cfg(feature = "second_byte")]
+            second_byte,
+            #[cfg(feature = "second_byte")]
+            second_byte_offset,
             wildcard_prefix,
             length,
         })
