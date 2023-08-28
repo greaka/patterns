@@ -24,8 +24,9 @@
 mod tests;
 
 use core::{
+    cmp::min,
     num::ParseIntError,
-    ops::{BitAnd, Deref},
+    ops::BitAnd,
     simd::{Mask, Simd, SimdPartialEq, ToBitMask},
     str::FromStr,
 };
@@ -34,15 +35,19 @@ use core::{
 /// Every block of data is processed in chunks of `BYTES` bytes.
 pub const BYTES: usize = 64;
 
+enum ScannerState {
+    PreAlign(usize),
+    Simd(u64),
+    Tail,
+    End,
+}
+
 /// An iterator for searching a given pattern in data
 pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
     pattern: &'pattern Pattern,
-    data_len: usize,
     data: &'data [u8],
     cursor: &'cursor [u8],
-    position: usize,
-    first_byte: u64,
-    buffer: Buffer,
+    state: ScannerState,
 }
 
 impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
@@ -50,16 +55,73 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     #[must_use]
     #[inline]
     pub fn new(pattern: &'pattern Pattern, data: &'data [u8]) -> Scanner<'pattern, 'data, 'cursor> {
+        let align = data.as_ptr().align_offset(BYTES);
         Scanner {
             pattern,
-            data_len: data.len(),
             data,
             cursor: data,
-            buffer: Buffer::new(),
-            first_byte: 0,
-            position: 0,
+            state: if align < BYTES {
+                // by contract, align_offset may return usize::MAX
+                ScannerState::PreAlign(min(data.len(), align)) // if data < BYTES, it's all prefix
+            } else {
+                ScannerState::Simd(0)
+            },
         }
     }
+}
+
+/// Match `pattern` against the start of `data` (without SIMD)
+#[inline(always)]
+fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
+    pattern.bytes.as_array()[0..pattern.length]
+        .iter()
+        .zip(pattern.mask.to_array()[0..pattern.length].iter())
+        .zip(data[0..pattern.length].iter())
+        .all(|((pat, mask), val)| (!*mask) || *pat == *val)
+}
+
+/// Find the offset of `cursor` into `data`.
+///
+/// # Safety
+/// Assumes that `cursor` is derived from `data` as in `data[K..]`
+#[inline(always)]
+fn cursor_offset(cursor: &&[u8], data: &[u8]) -> usize {
+    (unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize)
+}
+
+/// Search for `pattern` in `data`, starting from `cursor` (without SIMD)
+///
+/// The `limit` parameter is an upper bound on the number of iterations
+/// i.e. how many bytes of `data` are searched *for the first byte* of `pattern`
+#[inline]
+fn plain_search(
+    pattern: &Pattern,
+    data: &[u8],
+    cursor: &mut &[u8],
+    limit: &mut usize,
+) -> Option<usize> {
+    while *limit > 0 && cursor.len() >= pattern.length {
+        if cursor[0] == pattern.first_byte[0] {
+            #[cfg(feature = "second_byte")]
+            if cursor[pattern.second_byte_offset] != pattern.second_byte[0] {
+                continue;
+            }
+            // subtract wraps if matched too early -- wildcard prefix is before the start
+            if let Some(index) = cursor_offset(cursor, data).checked_sub(pattern.wildcard_prefix) {
+                // non-SIMD pattern comparison
+                if plain_match(pattern, cursor) {
+                    *cursor = &cursor[1..];
+                    *limit -= 1;
+                    return Some(index);
+                }
+            };
+        }
+
+        *cursor = &cursor[1..];
+        *limit -= 1;
+    }
+
+    None
 }
 
 impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'cursor> {
@@ -68,51 +130,41 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(index) = find_in_buffer(
-                self.pattern,
-                self.data,
-                &mut self.cursor,
-                &mut self.first_byte,
-            ) {
-                let index = index + self.position;
-                if self.buffer.in_use() && index + self.pattern.length > self.data_len {
-                    return None;
+            match &mut self.state {
+                ScannerState::PreAlign(limit) => {
+                    if let Some(index) =
+                        plain_search(self.pattern, self.data, &mut self.cursor, limit)
+                    {
+                        return Some(index);
+                    }
+
+                    if self.cursor.len() < self.pattern.length {
+                        self.state = ScannerState::End;
+                    } else {
+                        self.state = ScannerState::Simd(0);
+                    }
                 }
-                return Some(index);
-            }
-            // `find_in_buffer` can only check `BYTES` amount of bytes at once, no less.
-            // It returns `None` if it ran out of space in data to look for matches.
-            // For the final bit, copy the remaining data to a buffer and search there
-            // again, but only do that once, otherwise we get an infinite loop.
-            // Also remember that this is an iterator. This function gets called multiple
-            // times and in every possible state of `self`.
-            if self.buffer.in_use() {
-                return None;
-            }
-            self.copy_to_buffer();
-        }
-    }
-}
+                ScannerState::Simd(first_byte) => {
+                    if let Some(index) =
+                        find_in_buffer(self.pattern, self.data, &mut self.cursor, first_byte)
+                    {
+                        return Some(index);
+                    }
 
-impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
-    fn copy_to_buffer(&mut self) {
-        self.save_position();
-        self.buffer.copy_from(self.cursor);
-        self.first_byte = 0;
-        // Safety:
-        // This is instant UB, but I don't know how to fix this.
-        // This is UB because we violate aliasing and extend the lifetime.
-        // self.buffer is a mutable reference while self.data is an immutable reference.
-        unsafe {
-            self.cursor = &*(&*self.buffer as *const [u8]);
-            self.data = &*(&*self.buffer as *const [u8]);
-        }
-    }
+                    self.state = ScannerState::Tail;
+                }
+                ScannerState::Tail => {
+                    let mut limit: usize = usize::MAX;
+                    if let Some(index) =
+                        plain_search(self.pattern, self.data, &mut self.cursor, &mut limit)
+                    {
+                        return Some(index);
+                    }
 
-    fn save_position(&mut self) {
-        // Safety: This is fine because we make sure that cursor always points to data
-        unsafe {
-            self.position = self.cursor.as_ptr().offset_from(self.data.as_ptr()) as usize;
+                    self.state = ScannerState::End;
+                }
+                ScannerState::End => return None,
+            }
         }
     }
 }
@@ -158,10 +210,8 @@ fn find_in_buffer(
             }
 
             // Save the position within data.
-            // Safety: This is fine because we make sure that cursor always points to data
-            let Some(index) = (unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize
-                + offset)
-                .checked_sub(pattern.wildcard_prefix)
+            let Some(index) =
+                (cursor_offset(cursor, data) + offset).checked_sub(pattern.wildcard_prefix)
             else {
                 // matched too early -- wildcard prefix is before the start
                 continue;
@@ -284,42 +334,6 @@ impl FromStr for Pattern {
             wildcard_prefix,
             length,
         })
-    }
-}
-
-struct Buffer {
-    // 3 * BYTES = 1x for rest of the data, 1x to not overrun,
-    // 1x for weird patterns with a lot of prefix wildcards
-    inner: [u8; 3 * BYTES],
-    in_use: bool,
-}
-
-impl Buffer {
-    pub(crate) const fn new() -> Self {
-        Self {
-            in_use: false,
-            inner: [0_u8; 3 * BYTES],
-        }
-    }
-
-    pub(crate) fn copy_from(&mut self, data: &[u8]) {
-        assert!(!self.in_use, "buffer reused");
-        self.in_use = true;
-
-        let (data_stub, _) = self.inner.split_at_mut(data.len());
-        data_stub.copy_from_slice(data);
-    }
-
-    pub(crate) const fn in_use(&self) -> bool {
-        self.in_use
-    }
-}
-
-impl Deref for Buffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
     }
 }
 
