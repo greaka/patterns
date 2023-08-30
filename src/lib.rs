@@ -18,10 +18,7 @@
 //! ```
 
 #![feature(portable_simd)]
-#![cfg_attr(not(test), no_std)]
-
-#[cfg(test)]
-mod tests;
+#![no_std]
 
 use core::{
     cmp::min,

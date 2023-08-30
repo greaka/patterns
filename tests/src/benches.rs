@@ -1,17 +1,8 @@
-use aligned_vec::{avec, AVec};
+mod utils;
+use aligned_vec::avec;
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
 use patterns::Pattern;
-use xxhash_rust::xxh3;
-
-// duplicated in src/tests.rs
-pub fn xxh3_data(length: usize) -> AVec<u8> {
-    AVec::<u8>::from_iter(
-        64,
-        (0..length.div_ceil(8))
-            .flat_map(|i| xxh3::xxh3_64(&i.to_be_bytes()).to_be_bytes())
-            .take(length),
-    )
-}
+use utils::*;
 
 const PLAIN_PATTERN: &str = "01 01 01 01 01 01 01 01";
 const WILDCARD_PATTERN: &str = "01 01 ?? 01 . 01 01 01";
@@ -36,9 +27,7 @@ fn xxh_alignment(c: &mut Criterion) {
             criterion::BenchmarkId::from_parameter(offset),
             &offset,
             |b, i: &usize| {
-                let data = &data[offset..(data.len() - (64 - offset))];
-                assert_eq!(data.len(), 1_000_032 - 64);
-                avx(b, &mid_1, data);
+                with_misaligned(&data, offset, |data| avx(b, &mid_1, data));
             },
         );
     }
