@@ -53,13 +53,13 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     #[inline]
     pub fn new(pattern: &'pattern Pattern, data: &'data [u8]) -> Scanner<'pattern, 'data, 'cursor> {
         let align = data.as_ptr().align_offset(BYTES);
+        let align = min(align, BYTES); // by contract, align_offset may return usize::MAX
         Scanner {
             pattern,
             data,
             cursor: data,
-            state: if align < BYTES {
-                // by contract, align_offset may return usize::MAX
-                ScannerState::PreAlign(min(data.len(), align)) // if data < BYTES, it's all prefix
+            state: if align != 0 {
+                ScannerState::PreAlign(align)
             } else {
                 ScannerState::Simd(0)
             },
