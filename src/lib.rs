@@ -145,9 +145,9 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
                         self.state = ScannerState::Simd(0);
                     }
                 }
-                ScannerState::Simd(first_byte) => {
+                ScannerState::Simd(candidate_mask) => {
                     if let Some(index) =
-                        find_in_buffer(self.pattern, self.data, &mut self.cursor, first_byte)
+                        simd_search(self.pattern, self.data, &mut self.cursor, candidate_mask)
                     {
                         return Some(index);
                     }
@@ -170,39 +170,50 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
     }
 }
 
-fn find_in_buffer(
+fn simd_search(
     pattern: &Pattern,
     data: &[u8],
     cursor: &mut &[u8],
-    first_byte: &mut u64,
+    candidate_mask: &mut u64,
 ) -> Option<usize> {
     loop {
-        if *first_byte == 0 {
+        // If multiple results were found in the same BYTES-size block,
+        // candidate_mask will be non-zero upon entry to this function
+        if *candidate_mask == 0 {
             if cursor.len() < BYTES {
+                // Switch to non-SIMD mode for the remaining unaligned section of the data array
                 break None;
             }
 
             let search = Simd::from_slice(cursor);
             // Look for the first non wildcard byte.
-            *first_byte = search.simd_eq(pattern.first_byte).to_bitmask();
+            *candidate_mask = search.simd_eq(pattern.first_byte).to_bitmask();
 
             #[cfg(feature = "second_byte")]
+            // If the pattern has a second non wildcard byte,
             if pattern.second_byte_offset != 0
+                // data array length does not prevent the SIMD read,
                 && cursor.len() - pattern.second_byte_offset >= BYTES
-                && *first_byte != 0
+                // and the first non wildcard byte was seen at least once,
+                && *candidate_mask != 0
             {
+                // search for instances of the second non wildcard byte, offset by the position
+                // of that byte in the pattern
                 let search2 = Simd::from_slice(&cursor[pattern.second_byte_offset..]);
                 let second_byte = search2.simd_eq(pattern.second_byte).to_bitmask();
-                *first_byte &= second_byte;
+                // limit the candidates to those which also match the second byte
+                *candidate_mask &= second_byte;
             }
         }
 
-        while *first_byte != 0 {
-            let offset = first_byte.trailing_zeros() as usize;
+        while *candidate_mask != 0 {
+            // Get the byte offset of the next candidate (relative to cursor position)
+            let offset = candidate_mask.trailing_zeros() as usize;
 
-            // Shift the cursor to not check the same data again.
-            *first_byte &= !(1 << offset);
+            // Remove the candidate from the mask
+            *candidate_mask &= !(1 << offset);
 
+            // If the data array is too short, switch to non-SIMD mode
             if cursor.len() - offset < BYTES {
                 // Make sure we don't repeat values matched earlier in this SIMD slice
                 // i.e. during previous iterations of this while loop
@@ -210,13 +221,15 @@ fn find_in_buffer(
                 return None;
             }
 
-            // Save the position within data.
+            // Save the position within data, taking prefix wildcards into account
             let Some(index) =
                 (cursor_offset(cursor, data) + offset).checked_sub(pattern.wildcard_prefix)
             else {
                 // matched too early -- wildcard prefix is before the start
                 continue;
             };
+
+            // Validate the candidate against the whole pattern.
 
             let search = Simd::from_slice(&cursor[offset..]);
             // Check `BYTES` amount of bytes at the same time.
@@ -227,7 +240,8 @@ fn find_in_buffer(
             // Perform an equality check on all registers of the final result.
             // Essentially this boils down to `result & mask == mask`
             if filtered_result == pattern.mask {
-                if *first_byte == 0 {
+                // If this was the last candidate in the current block, move the cursor forward.
+                if *candidate_mask == 0 {
                     *cursor = &cursor[BYTES..];
                 }
 
@@ -235,6 +249,7 @@ fn find_in_buffer(
             }
         }
 
+        // No candidates remain in the current block, move the cursor forward.
         *cursor = &cursor[BYTES..];
     }
 }
