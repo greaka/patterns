@@ -68,13 +68,17 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
 }
 
 /// Match `pattern` against the start of `data` (without SIMD)
+///
+/// Assumes that data.len() >= pattern.length
 #[inline(always)]
 fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
-    pattern.bytes.as_array()[0..pattern.length]
+    // Triple-zip iterator over the pattern.length prefix pattern, mask and data
+    pattern.bytes.as_array()[..pattern.length]
         .iter()
-        .zip(pattern.mask.to_array()[0..pattern.length].iter())
-        .zip(data[0..pattern.length].iter())
-        .all(|((pat, mask), val)| (!*mask) || *pat == *val)
+        .zip(pattern.mask.to_array()[..pattern.length].iter())
+        .zip(data[..pattern.length].iter())
+        // If all pattern bytes are either masked or equal the data bytes, the pattern matches the data
+        .all(|((&pattern_byte, &mask_byte), &data_byte)| (!mask_byte) || pattern_byte == data_byte)
 }
 
 /// Find the offset of `cursor` into `data`.
