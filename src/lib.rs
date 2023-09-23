@@ -82,11 +82,10 @@ fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
 }
 
 /// Find the offset of `cursor` into `data`.
-///
-/// # Safety
-/// Assumes that `cursor` is derived from `data` as in `data[K..]`
 #[inline(always)]
 fn cursor_offset(cursor: &&[u8], data: &[u8]) -> usize {
+    // # Safety
+    // Assumes that `cursor` is derived from `data` as in `data[K..]`
     (unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize)
 }
 
