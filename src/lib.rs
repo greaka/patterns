@@ -81,6 +81,17 @@ fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
         .all(|((&pattern_byte, mask_byte), &data_byte)| (!mask_byte) || pattern_byte == data_byte)
 }
 
+/// Match `pattern` against the start of `data` (using copying SIMD)
+///
+/// Assumes that data.len() >= pattern.length
+#[inline(always)]
+fn simd_slow_match(pattern: &Pattern, data: &[u8]) -> bool {
+    let part = min(BYTES, data.len());
+    let mut buf = Simd::default();
+    buf.as_mut_array()[..part].copy_from_slice(&data[..part]);
+    buf.simd_eq(pattern.bytes).to_bitmask() & pattern.mask == pattern.mask
+}
+
 /// Find the offset of `cursor` into `data`.
 #[inline(always)]
 fn cursor_offset(cursor: &&[u8], data: &[u8]) -> usize {
@@ -164,7 +175,7 @@ fn simd_slow_search(
             if let Some(index) =
                 (cursor_offset(cursor, data) + offset).checked_sub(pattern.wildcard_prefix)
             {
-                if plain_match(pattern, &cursor[offset..]) {
+                if simd_slow_match(pattern, &cursor[offset..]) {
                     *cursor = &cursor[offset + 1..];
                     *limit = limit.saturating_sub(offset + 1);
                     return Some(index);
