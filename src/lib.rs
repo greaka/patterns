@@ -124,6 +124,62 @@ fn plain_search(
     None
 }
 
+/// Search for `pattern` in `data`, starting from `cursor` (using copying SIMD)
+///
+/// The `limit` parameter is an upper bound on the number of iterations
+/// i.e. how many bytes of `data` are searched *for the first byte* of `pattern`
+#[inline]
+fn simd_slow_search(
+    pattern: &Pattern,
+    data: &[u8],
+    cursor: &mut &[u8],
+    limit: &mut usize,
+) -> Option<usize> {
+    while *limit > 0 && cursor.len() >= pattern.length {
+        let mut search: Simd<u8, BYTES> = Simd::default();
+        let part = min(cursor.len(), BYTES);
+        search.as_mut_array()[..part].copy_from_slice(&cursor[..part]);
+        // Look for the first non wildcard byte.
+        let mut candidate_mask = search.simd_eq(pattern.first_byte).to_bitmask();
+        while candidate_mask != 0 {
+            // Get the byte offset of the next candidate (relative to cursor position)
+            let offset = candidate_mask.trailing_zeros() as usize;
+
+            // If first byte of pattern is zero, we may match past the end
+            let lim = min(*limit, cursor.len());
+            if offset > lim {
+                *cursor = &cursor[lim..];
+                return None;
+            }
+
+            if cursor.len() - offset < pattern.length {
+                // Pattern is longer than remaining data
+                break;
+            }
+
+            // Remove the candidate from the mask
+            candidate_mask &= !(1 << offset);
+
+            // subtract wraps if matched too early -- wildcard prefix is before the start
+            if let Some(index) =
+                (cursor_offset(cursor, data) + offset).checked_sub(pattern.wildcard_prefix)
+            {
+                if plain_match(pattern, &cursor[offset..]) {
+                    *cursor = &cursor[offset + 1..];
+                    *limit = limit.saturating_sub(offset + 1);
+                    return Some(index);
+                }
+            }
+        }
+        {
+            let skip = min(min(BYTES, *limit), cursor.len());
+            *cursor = &cursor[skip..];
+            *limit -= skip;
+        }
+    }
+    None
+}
+
 impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'cursor> {
     type Item = usize;
 
@@ -133,7 +189,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
             match &mut self.state {
                 ScannerState::PreAlign(limit) => {
                     if let Some(index) =
-                        plain_search(self.pattern, self.data, &mut self.cursor, limit)
+                        simd_slow_search(self.pattern, self.data, &mut self.cursor, limit)
                     {
                         return Some(index);
                     }
@@ -156,7 +212,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
                 ScannerState::Tail => {
                     let mut limit: usize = usize::MAX;
                     if let Some(index) =
-                        plain_search(self.pattern, self.data, &mut self.cursor, &mut limit)
+                        simd_slow_search(self.pattern, self.data, &mut self.cursor, &mut limit)
                     {
                         return Some(index);
                     }
