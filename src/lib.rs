@@ -23,7 +23,6 @@
 use core::{
     cmp::min,
     num::ParseIntError,
-    ops::BitAnd,
     simd::{Mask, Simd, SimdPartialEq, ToBitMask},
     str::FromStr,
 };
@@ -75,10 +74,11 @@ fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
     // Triple-zip iterator over the pattern.length prefix pattern, mask and data
     pattern.bytes.as_array()[..pattern.length]
         .iter()
-        .zip(pattern.mask.to_array()[..pattern.length].iter())
+        // Iterate over the bits of `pattern.mask`
+        .zip((0..pattern.length).map(|i| (pattern.mask >> i) & 1 == 1))
         .zip(data[..pattern.length].iter())
         // If all pattern bytes are either masked or equal the data bytes, the pattern matches the data
-        .all(|((&pattern_byte, &mask_byte), &data_byte)| (!mask_byte) || pattern_byte == data_byte)
+        .all(|((&pattern_byte, mask_byte), &data_byte)| (!mask_byte) || pattern_byte == data_byte)
 }
 
 /// Find the offset of `cursor` into `data`.
@@ -289,12 +289,11 @@ fn simd_search(
             let search = Simd::from_slice(&cursor[offset..]);
             // Check `BYTES` amount of bytes at the same time.
             let result = search.simd_eq(pattern.bytes);
-            // Filter out results we are not interested in.
-            let filtered_result = result.bitand(pattern.mask);
+            // Convert to bitmask
+            let result_mask = result.to_bitmask();
 
-            // Perform an equality check on all registers of the final result.
-            // Essentially this boils down to `result & mask == mask`
-            if filtered_result == pattern.mask {
+            // Filter out results we are not interested in.
+            if result_mask & pattern.mask == pattern.mask {
                 // If this was the last candidate in the current block, move the cursor forward.
                 if *candidate_mask == 0 {
                     *cursor = &cursor[BYTES..];
@@ -313,7 +312,7 @@ fn simd_search(
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub(crate) bytes: Simd<u8, BYTES>,
-    pub(crate) mask: Mask<i8, BYTES>,
+    pub(crate) mask: u64,
     pub(crate) first_byte: Simd<u8, BYTES>,
     #[cfg(feature = "second_byte")]
     pub(crate) second_byte: Simd<u8, BYTES>,
@@ -396,7 +395,7 @@ impl FromStr for Pattern {
 
         Ok(Self {
             bytes: Simd::from_array(buffer),
-            mask: Mask::from_array(mask),
+            mask: Mask::<i8, BYTES>::from_array(mask).to_bitmask(),
             first_byte,
             #[cfg(feature = "second_byte")]
             second_byte,
