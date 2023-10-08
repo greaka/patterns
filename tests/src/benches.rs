@@ -23,13 +23,15 @@ fn xxh_alignment(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("xxh_align");
     for offset in 0..16usize {
-        group.bench_with_input(
-            criterion::BenchmarkId::from_parameter(offset),
-            &offset,
-            |b, i: &usize| {
-                with_misaligned(&data, offset, |data| avx(b, &mid_1, data));
-            },
-        );
+        with_misaligned(&data, offset, |data| {
+            group.bench_with_input(
+                criterion::BenchmarkId::from_parameter(offset),
+                &offset,
+                |b, i: &usize| {
+                    avx(b, &mid_1, data);
+                },
+            )
+        });
     }
 
     group.finish();
