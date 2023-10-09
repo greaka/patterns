@@ -40,6 +40,22 @@ fn xxh3_data_test() {
 }
 
 #[test]
+fn overlap() {
+    assert_eq!(
+        simple("ab ?? ?? cd", &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd]),
+        &[0, 2]
+    );
+    assert_eq!(
+        simple("ab ?? ??", &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd]),
+        &[0, 2]
+    );
+    assert_eq!(
+        simple("?? ?? cd", &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd]),
+        &[1, 3]
+    );
+}
+
+#[test]
 fn repeat_across_buffer() {
     let mut data = [0_u8; 64];
     data[0] = 1;
