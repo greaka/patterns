@@ -1,0 +1,22 @@
+[package]
+name = "patterns-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.patterns]
+path = "../"
+
+[dev-dependencies]
+aligned-vec = "0.5.0"
+criterion = "0.4.0"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
+
+[[test]]
+name = "patterns-test"
+path = "src/tests.rs"
+bench = false
+
+[[bench]]
+name = "patterns-bench"
+path = "src/benches.rs"
+harness = false

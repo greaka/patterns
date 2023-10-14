@@ -21,8 +21,9 @@
 #![no_std]
 
 use core::{
+    cmp::min,
     num::ParseIntError,
-    ops::{BitAnd, Deref},
+    ops::BitAnd,
     simd::{Mask, Simd, SimdPartialEq, ToBitMask},
     str::FromStr,
 };
@@ -31,13 +32,19 @@ use core::{
 /// Every block of data is processed in chunks of `BYTES` bytes.
 pub const BYTES: usize = 64;
 
+enum ScannerState {
+    PreAlign(usize),
+    Simd(u64),
+    Tail,
+    End,
+}
+
 /// An iterator for searching a given pattern in data
 pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
     pattern: &'pattern Pattern,
     data: &'data [u8],
     cursor: &'cursor [u8],
-    position: usize,
-    buffer: Buffer,
+    state: ScannerState,
 }
 
 impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
@@ -45,14 +52,143 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     #[must_use]
     #[inline]
     pub fn new(pattern: &'pattern Pattern, data: &'data [u8]) -> Scanner<'pattern, 'data, 'cursor> {
+        let align = data.as_ptr().align_offset(BYTES);
+        let align = min(align, BYTES); // by contract, align_offset may return usize::MAX
         Scanner {
             pattern,
             data,
             cursor: data,
-            buffer: Buffer::new(),
-            position: 0,
+            state: if align != 0 {
+                ScannerState::PreAlign(align)
+            } else {
+                ScannerState::Simd(0)
+            },
         }
     }
+}
+
+/// Match `pattern` against the start of `data` (without SIMD)
+///
+/// Assumes that data.len() >= pattern.length
+#[inline(always)]
+fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
+    // Triple-zip iterator over the pattern.length prefix pattern, mask and data
+    pattern.bytes.as_array()[..pattern.length]
+        .iter()
+        .zip(pattern.mask.to_array()[..pattern.length].iter())
+        .zip(data[..pattern.length].iter())
+        // If all pattern bytes are either masked or equal the data bytes, the pattern matches the data
+        .all(|((&pattern_byte, &mask_byte), &data_byte)| (!mask_byte) || pattern_byte == data_byte)
+}
+
+/// Match `pattern` against the start of `data` (using copying SIMD)
+///
+/// Assumes that data.len() >= pattern.length
+#[inline(always)]
+fn simd_slow_match(pattern: &Pattern, data: &[u8]) -> bool {
+    let part = min(BYTES, data.len());
+    let mut buf = Simd::default();
+    buf.as_mut_array()[..part].copy_from_slice(&data[..part]);
+    buf.simd_eq(pattern.bytes) & pattern.mask == pattern.mask
+}
+
+/// Find the offset of `cursor` into `data`.
+#[inline(always)]
+fn cursor_offset(cursor: &&[u8], data: &[u8]) -> usize {
+    // # Safety
+    // Assumes that `cursor` is derived from `data` as in `data[K..]`
+    (unsafe { cursor.as_ptr().offset_from(data.as_ptr()) } as usize)
+}
+
+/// Search for `pattern` in `data`, starting from `cursor` (without SIMD)
+///
+/// The `limit` parameter is an upper bound on the number of iterations
+/// i.e. how many bytes of `data` are searched *for the first byte* of `pattern`
+#[inline]
+fn plain_search(
+    pattern: &Pattern,
+    data: &[u8],
+    cursor: &mut &[u8],
+    limit: &mut usize,
+) -> Option<usize> {
+    while *limit > 0 && cursor.len() >= pattern.length {
+        if cursor[0] == pattern.first_byte[0] {
+            #[cfg(feature = "second_byte")]
+            if cursor[pattern.second_byte_offset] != pattern.second_byte[0] {
+                continue;
+            }
+            // subtract wraps if matched too early -- wildcard prefix is before the start
+            if let Some(index) = cursor_offset(cursor, data).checked_sub(pattern.wildcard_prefix) {
+                // non-SIMD pattern comparison
+                if plain_match(pattern, cursor) {
+                    *cursor = &cursor[1..];
+                    *limit -= 1;
+                    return Some(index);
+                }
+            };
+        }
+
+        *cursor = &cursor[1..];
+        *limit -= 1;
+    }
+
+    None
+}
+
+/// Search for `pattern` in `data`, starting from `cursor` (using copying SIMD)
+///
+/// The `limit` parameter is an upper bound on the number of iterations
+/// i.e. how many bytes of `data` are searched *for the first byte* of `pattern`
+#[inline]
+fn simd_slow_search(
+    pattern: &Pattern,
+    data: &[u8],
+    cursor: &mut &[u8],
+    limit: &mut usize,
+) -> Option<usize> {
+    while *limit > 0 && cursor.len() >= pattern.length {
+        let mut search: Simd<u8, BYTES> = Simd::default();
+        let part = min(cursor.len(), BYTES);
+        search.as_mut_array()[..part].copy_from_slice(&cursor[..part]);
+        // Look for the first non wildcard byte.
+        let mut candidate_mask = search.simd_eq(pattern.first_byte).to_bitmask();
+        while candidate_mask != 0 {
+            // Get the byte offset of the next candidate (relative to cursor position)
+            let offset = candidate_mask.trailing_zeros() as usize;
+
+            // If first byte of pattern is zero, we may match past the end
+            let lim = min(*limit, cursor.len());
+            if offset > lim {
+                *cursor = &cursor[lim..];
+                return None;
+            }
+
+            if cursor.len() - offset < pattern.length {
+                // Pattern is longer than remaining data
+                break;
+            }
+
+            // Remove the candidate from the mask
+            candidate_mask &= !(1 << offset);
+
+            // subtract wraps if matched too early -- wildcard prefix is before the start
+            if let Some(index) =
+                (cursor_offset(cursor, data) + offset).checked_sub(pattern.wildcard_prefix)
+            {
+                if simd_slow_match(pattern, &cursor[offset..]) {
+                    *cursor = &cursor[offset + 1..];
+                    *limit = limit.saturating_sub(offset + 1);
+                    return Some(index);
+                }
+            }
+        }
+        {
+            let skip = min(min(BYTES, *limit), cursor.len());
+            *cursor = &cursor[skip..];
+            *limit -= skip;
+        }
+    }
+    None
 }
 
 impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'cursor> {
@@ -61,94 +197,141 @@ impl<'pattern, 'data: 'cursor, 'cursor> Iterator for Scanner<'pattern, 'data, 'c
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(index) = find_in_buffer(self.pattern, self.data, &mut self.cursor) {
-                return Some(self.position + index);
+            match &mut self.state {
+                ScannerState::PreAlign(limit) => {
+                    if let Some(index) =
+                        simd_slow_search(self.pattern, self.data, &mut self.cursor, limit)
+                    {
+                        return Some(index);
+                    }
+
+                    if self.cursor.len() < self.pattern.length {
+                        self.state = ScannerState::End;
+                    } else {
+                        self.state = ScannerState::Simd(0);
+                    }
+                }
+                ScannerState::Simd(candidate_mask) => {
+                    if let Some(index) =
+                        simd_search(self.pattern, self.data, &mut self.cursor, candidate_mask)
+                    {
+                        return Some(index);
+                    }
+
+                    self.state = ScannerState::Tail;
+                }
+                ScannerState::Tail => {
+                    let mut limit: usize = usize::MAX;
+                    if let Some(index) =
+                        simd_slow_search(self.pattern, self.data, &mut self.cursor, &mut limit)
+                    {
+                        return Some(index);
+                    }
+
+                    self.state = ScannerState::End;
+                }
+                ScannerState::End => return None,
             }
-            // `find_in_buffer` can only check `BYTES` amount of bytes at once, no less.
-            // It returns `None` if it ran out of space in data to look for matches.
-            // For the final bit, copy the remaining data to a buffer and search there
-            // again, but only do that once, otherwise we get an infinite loop.
-            // Also remember that this is an iterator. This function gets called multiple
-            // times and in every possible state of `self`.
-            if self.buffer.in_use() {
+        }
+    }
+}
+
+fn simd_search(
+    pattern: &Pattern,
+    data: &[u8],
+    cursor: &mut &[u8],
+    candidate_mask: &mut u64,
+) -> Option<usize> {
+    loop {
+        // If multiple results were found in the same BYTES-size block,
+        // candidate_mask will be non-zero upon entry to this function
+        if *candidate_mask == 0 {
+            if cursor.len() < BYTES {
+                // Switch to non-SIMD mode for the remaining unaligned section of the data array
+                break None;
+            }
+
+            let search = Simd::from_slice(cursor);
+            // Look for the first non wildcard byte.
+            *candidate_mask = search.simd_eq(pattern.first_byte).to_bitmask();
+
+            #[cfg(feature = "second_byte")]
+            // If the pattern has a second non wildcard byte,
+            if pattern.second_byte_offset != 0
+                // data array length does not prevent the SIMD read,
+                && cursor.len() - pattern.second_byte_offset >= BYTES
+                // and the first non wildcard byte was seen at least once,
+                && *candidate_mask != 0
+            {
+                // search for instances of the second non wildcard byte, offset by the position
+                // of that byte in the pattern
+                let search2 = Simd::from_slice(&cursor[pattern.second_byte_offset..]);
+                let second_byte = search2.simd_eq(pattern.second_byte).to_bitmask();
+                // limit the candidates to those which also match the second byte
+                *candidate_mask &= second_byte;
+            }
+        }
+
+        while *candidate_mask != 0 {
+            // Get the byte offset of the next candidate (relative to cursor position)
+            let offset = candidate_mask.trailing_zeros() as usize;
+
+            // Remove the candidate from the mask
+            *candidate_mask &= !(1 << offset);
+
+            // If the data array is too short, switch to non-SIMD mode
+            if cursor.len() - offset < BYTES {
+                // Make sure we don't repeat values matched earlier in this SIMD slice
+                // i.e. during previous iterations of this while loop
+                *cursor = &cursor[offset..];
                 return None;
             }
-            self.copy_to_buffer();
-        }
-    }
-}
 
-impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
-    fn copy_to_buffer(&mut self) {
-        self.save_position();
-        self.buffer.copy_from(self.cursor);
-        // Safety:
-        // This is instant UB, but I don't know how to fix this.
-        // This is UB because we violate aliasing and extend the lifetime.
-        // self.buffer is a mutable reference while self.data is an immutable reference.
-        unsafe {
-            self.cursor = &*(&*self.buffer as *const [u8]);
-            self.data = &*(&*self.buffer as *const [u8]);
-        }
-    }
+            // Save the position within data, taking prefix wildcards into account
+            let Some(index) =
+                (cursor_offset(cursor, data) + offset).checked_sub(pattern.wildcard_prefix)
+            else {
+                // matched too early -- wildcard prefix is before the start
+                continue;
+            };
 
-    fn save_position(&mut self) {
-        // Safety: This is fine because we make sure that cursor always points to data
-        unsafe {
-            self.position = self.cursor.as_ptr().offset_from(self.data.as_ptr()) as usize;
-        }
-    }
-}
+            // Validate the candidate against the whole pattern.
 
-fn find_in_buffer(pattern: &Pattern, data: &[u8], cursor: &mut &[u8]) -> Option<usize> {
-    loop {
-        if cursor.len() < BYTES + pattern.wildcard_prefix {
-            break None;
+            let search = Simd::from_slice(&cursor[offset..]);
+            // Check `BYTES` amount of bytes at the same time.
+            let result = search.simd_eq(pattern.bytes);
+            // Filter out results we are not interested in.
+            let filtered_result = result.bitand(pattern.mask);
+
+            // Perform an equality check on all registers of the final result.
+            // Essentially this boils down to `result & mask == mask`
+            if filtered_result == pattern.mask {
+                // If this was the last candidate in the current block, move the cursor forward.
+                if *candidate_mask == 0 {
+                    *cursor = &cursor[BYTES..];
+                }
+
+                return Some(index);
+            }
         }
 
-        // We can skip bytes that are wildcards.
-        let search = Simd::from_slice(&cursor[pattern.wildcard_prefix..]);
-        // Look for the first non wildcard byte.
-        let first_byte = search.simd_eq(pattern.first_byte).to_bitmask();
-
-        // If no match was found, shift by the amount of bytes we check at once and
-        // start over.
-        if first_byte == 0 {
-            *cursor = &cursor[BYTES..];
-            continue;
-        }
-        // ... else shift the cursor to match the first match.
-        *cursor = &cursor[first_byte.trailing_zeros() as usize..];
-
-        if cursor.len() < BYTES {
-            break None;
-        }
-
-        let search = Simd::from_slice(cursor);
-        // Check `BYTES` amount of bytes at the same time.
-        let result = search.simd_eq(pattern.bytes);
-        // Filter out results we are not interested in.
-        let filtered_result = result.bitand(pattern.mask);
-        // Save the position within data.
-        // Safety: This is fine because we make sure that cursor always points to data
-        let index = unsafe { cursor.as_ptr().offset_from(data.as_ptr()) };
-        // Shift the cursor by one to not check the same data again.
-        *cursor = &cursor[1..];
-        // Perform an equality check on all registers of the final result.
-        // Essentially this boils down to `result & mask == mask`
-        if filtered_result == pattern.mask {
-            return Some(index as usize);
-        }
+        // No candidates remain in the current block, move the cursor forward.
+        *cursor = &cursor[BYTES..];
     }
 }
 
 /// A prepared pattern
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Pattern {
     pub(crate) bytes: Simd<u8, BYTES>,
     pub(crate) mask: Mask<i8, BYTES>,
-    pub(crate) wildcard_prefix: usize,
     pub(crate) first_byte: Simd<u8, BYTES>,
+    #[cfg(feature = "second_byte")]
+    pub(crate) second_byte: Simd<u8, BYTES>,
+    #[cfg(feature = "second_byte")]
+    pub(crate) second_byte_offset: usize,
+    pub(crate) wildcard_prefix: usize,
+    pub(crate) length: usize,
 }
 
 impl Pattern {
@@ -177,75 +360,62 @@ impl FromStr for Pattern {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const WILDCARD: u8 = b'.';
+        /// allows . and ? as wildcard and only considers the first character
+        fn is_wildcard(byte: &str) -> bool {
+            const WILDCARD: u8 = b'.';
+            byte.as_bytes()[0] & WILDCARD == WILDCARD
+        }
 
-        let length = s.split_ascii_whitespace().count();
+        let bytes = s.split_ascii_whitespace();
+
+        // count and skip over prefix wildcards
+        let wildcard_prefix = bytes.clone().take_while(|x| is_wildcard(x)).count();
+        let bytes = bytes.skip(wildcard_prefix);
+
+        let length = bytes.clone().count();
         if length > BYTES {
             return Err(ParsePatternError::PatternTooLong);
         }
 
-        let bytes = s.split_ascii_whitespace();
         let mut buffer = [0_u8; BYTES];
         let mut mask = [false; BYTES];
 
         for (index, byte) in bytes.enumerate() {
-            // allows . and ? as wildcard and only considers the first character
-            if byte.as_bytes()[0] & WILDCARD == WILDCARD {
+            if is_wildcard(byte) {
                 continue;
             }
             buffer[index] = u8::from_str_radix(byte, 16)?;
             mask[index] = true;
         }
 
-        let wildcard_prefix = mask.iter().take_while(|&&x| !x).count();
-        if wildcard_prefix == BYTES {
+        // since prefix wildcards were skipped, the first byte must be non-wildcard
+        if !mask[0] {
             return Err(ParsePatternError::MissingNonWildcardByte);
         }
 
-        let first_byte = Simd::from_array([buffer[wildcard_prefix]; BYTES]);
+        let first_byte = Simd::from_array([buffer[0]; BYTES]);
+
+        #[cfg(feature = "second_byte")]
+        let second_byte_offset = mask
+            .iter()
+            .skip(1)
+            .position(|x| *x)
+            .map(|x| x + 1)
+            .unwrap_or(0);
+        #[cfg(feature = "second_byte")]
+        let second_byte = Simd::from_array([buffer[second_byte_offset]; BYTES]);
 
         Ok(Self {
             bytes: Simd::from_array(buffer),
             mask: Mask::from_array(mask),
-            wildcard_prefix,
             first_byte,
+            #[cfg(feature = "second_byte")]
+            second_byte,
+            #[cfg(feature = "second_byte")]
+            second_byte_offset,
+            wildcard_prefix,
+            length,
         })
-    }
-}
-
-struct Buffer {
-    // 3 * BYTES = 1x for rest of the data, 1x to not overrun,
-    // 1x for weird patterns with a lot of prefix wildcards
-    inner: [u8; 3 * BYTES],
-    in_use: bool,
-}
-
-impl Buffer {
-    pub(crate) const fn new() -> Self {
-        Self {
-            in_use: false,
-            inner: [0_u8; 3 * BYTES],
-        }
-    }
-
-    pub(crate) fn copy_from(&mut self, data: &[u8]) {
-        assert!(!self.in_use, "buffer reused");
-        self.in_use = true;
-
-        let (data_stub, _) = self.inner.split_at_mut(data.len());
-        data_stub.copy_from_slice(data);
-    }
-
-    pub(crate) const fn in_use(&self) -> bool {
-        self.in_use
-    }
-}
-
-impl Deref for Buffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
     }
 }
 
