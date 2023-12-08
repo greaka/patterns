@@ -1,6 +1,6 @@
 [package]
 name = "patterns"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["greaka <cargo@greaka.de>"]
 description = "no_std compatible pattern scan library using simd"
