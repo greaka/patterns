@@ -23,7 +23,7 @@
 use core::{
     num::ParseIntError,
     ops::{BitAnd, Deref},
-    simd::{Mask, Simd, SimdPartialEq, ToBitMask},
+    simd::{Mask, Simd, cmp::SimdPartialEq},
     str::FromStr,
 };
 
