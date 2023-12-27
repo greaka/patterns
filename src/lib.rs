@@ -22,8 +22,8 @@
 
 use core::{
     num::ParseIntError,
-    ops::{BitAnd, Deref},
-    simd::{Mask, Simd, cmp::SimdPartialEq},
+    ops::{BitAnd, Deref, Not},
+    simd::{cmp::SimdPartialEq, Mask, Simd},
     str::FromStr,
 };
 
@@ -32,6 +32,7 @@ use core::{
 pub const BYTES: usize = 64;
 
 /// An iterator for searching a given pattern in data
+#[must_use]
 pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
     pattern: &'pattern Pattern,
     data: &'data [u8],
@@ -42,7 +43,6 @@ pub struct Scanner<'pattern, 'data: 'cursor, 'cursor> {
 
 impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
     /// Create an iterator, also see [`Pattern::matches`]
-    #[must_use]
     #[inline]
     pub fn new(pattern: &'pattern Pattern, data: &'data [u8]) -> Scanner<'pattern, 'data, 'cursor> {
         Scanner {
@@ -143,7 +143,8 @@ fn find_in_buffer(pattern: &Pattern, data: &[u8], cursor: &mut &[u8]) -> Option<
 }
 
 /// A prepared pattern
-#[derive(Clone)]
+#[must_use]
+#[derive(Clone, Debug)]
 pub struct Pattern {
     pub(crate) bytes: Simd<u8, BYTES>,
     pub(crate) mask: Mask<i8, BYTES>,
@@ -153,17 +154,41 @@ pub struct Pattern {
 
 impl Pattern {
     /// Parse a pattern. Use the [`FromStr`] impl to return an error instead of
-    /// panicking. # Panics
+    /// panicking.
+    /// # Panics
     /// Panics if [`ParsePatternError`] is returned.
-    #[must_use]
     #[inline]
     pub fn new(pattern: &str) -> Self {
         pattern.parse().unwrap()
     }
 
+    /// Create a pattern from a byte slice and a mask.
+    /// Byte slices longer than [`BYTES`] are cut short.
+    /// Mask expects a [`u64`] bitencoding. A 0 bit marks the byte as wildcard.
+    /// Mask is trimmed to `bytes.len()`.
+    /// # Panics
+    /// Panics when all bytes are masked as wildcards.
+    #[inline]
+    pub fn from_slice(bytes: &[u8], mask: u64) -> Self {
+        let mut input: [u8; BYTES] = [0; BYTES];
+        let len = bytes.len().min(BYTES);
+        input[..len].copy_from_slice(bytes);
+        let mask = u64::MAX.checked_shr(len as u32).unwrap_or(0).not() & mask;
+        let bytes = Simd::from_array(input);
+        let mask = Mask::from_bitmask(mask.reverse_bits());
+
+        let (wildcard_prefix, first_byte) = get_first_byte(&bytes, &mask, len).unwrap();
+
+        Self {
+            bytes,
+            mask,
+            wildcard_prefix,
+            first_byte,
+        }
+    }
+
     /// Creates an iterator through data.
     #[inline]
-    #[must_use]
     pub fn matches<'pattern, 'data: 'cursor, 'cursor>(
         &'pattern self,
         data: &'data [u8],
@@ -197,20 +222,31 @@ impl FromStr for Pattern {
             mask[index] = true;
         }
 
-        let wildcard_prefix = mask.iter().take_while(|&&x| !x).count();
-        if wildcard_prefix == BYTES {
-            return Err(ParsePatternError::MissingNonWildcardByte);
-        }
+        let bytes = Simd::from_array(buffer);
+        let mask = Mask::from_array(mask);
 
-        let first_byte = Simd::from_array([buffer[wildcard_prefix]; BYTES]);
+        let (wildcard_prefix, first_byte) = get_first_byte(&bytes, &mask, length)?;
 
         Ok(Self {
-            bytes: Simd::from_array(buffer),
-            mask: Mask::from_array(mask),
+            bytes,
+            mask,
             wildcard_prefix,
             first_byte,
         })
     }
+}
+
+fn get_first_byte(
+    bytes: &Simd<u8, BYTES>,
+    mask: &Mask<i8, BYTES>,
+    length: usize,
+) -> Result<(usize, Simd<u8, 64>), ParsePatternError> {
+    let wildcard_prefix = mask.first_set().unwrap_or(BYTES);
+    if wildcard_prefix >= length {
+        return Err(ParsePatternError::MissingNonWildcardByte);
+    }
+    let first_byte = Simd::splat(bytes[wildcard_prefix]);
+    Ok((wildcard_prefix, first_byte))
 }
 
 struct Buffer {
