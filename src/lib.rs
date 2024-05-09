@@ -23,8 +23,8 @@
 use core::{
     cmp::min,
     num::ParseIntError,
-    ops::BitAnd,
-    simd::{Mask, Simd, SimdPartialEq, ToBitMask},
+    ops::BitAnd as _,
+    simd::{cmp::SimdPartialEq as _, Mask, Simd},
     str::FromStr,
 };
 
@@ -71,6 +71,7 @@ impl<'pattern, 'data: 'cursor, 'cursor> Scanner<'pattern, 'data, 'cursor> {
 ///
 /// Assumes that data.len() >= pattern.length
 #[inline(always)]
+#[allow(dead_code)]
 fn plain_match(pattern: &Pattern, data: &[u8]) -> bool {
     // Triple-zip iterator over the pattern.length prefix pattern, mask and data
     pattern.bytes.as_array()[..pattern.length]
@@ -105,6 +106,7 @@ fn cursor_offset(cursor: &&[u8], data: &[u8]) -> usize {
 /// The `limit` parameter is an upper bound on the number of iterations
 /// i.e. how many bytes of `data` are searched *for the first byte* of `pattern`
 #[inline]
+#[allow(dead_code)]
 fn plain_search(
     pattern: &Pattern,
     data: &[u8],
