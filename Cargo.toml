@@ -11,5 +11,10 @@ license = "MIT/Apache-2.0"
 name = "main"
 harness = false
 
+[[test]]
+name = "tests"
+
 [dev-dependencies]
+aligned-vec = "0.5.0"
 criterion = "0.5.1"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
