@@ -35,7 +35,7 @@
 use core::{
     cmp::min,
     iter::FusedIterator,
-    ops::{BitAnd, BitOr},
+    ops::{BitAnd, BitOr, Not},
     simd::{
         cmp::{SimdPartialEq, SimdPartialOrd},
         LaneCount, Mask, Simd, SupportedLaneCount,
@@ -129,7 +129,8 @@ where
             end: &data[data.len() - 1],
             position,
             candidates_mask,
-            exhausted: false,
+            // FIXME: check that this is correct, including with unaligned data
+            exhausted: data.len() < BYTES,
         }
     }
 
