@@ -378,13 +378,7 @@ where
             // data_len_mask ensures that only valid bytes are read
             Simd::<u8, BYTES>::load_select_ptr(data, data_len_mask, Default::default())
         } else if UNALIGNED {
-            let mut tmp = core::mem::MaybeUninit::<Simd<u8, BYTES>>::uninit();
-            // # Safety
-            // offset_ptr..(offset_ptr + BYTES) is within bounds of data
-            unsafe {
-                core::ptr::copy_nonoverlapping(data, tmp.as_mut_ptr().cast(), 1);
-                tmp.assume_init()
-            }
+            core::ptr::read_unaligned(data as *const _)
         } else {
             *(data as *const _)
         }
