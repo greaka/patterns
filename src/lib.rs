@@ -26,7 +26,6 @@
 
 // todos
 // optimize pattern.len() <= alignment
-// assert away all safety sections
 
 #![feature(portable_simd)]
 #![no_std]
@@ -39,7 +38,7 @@ use core::{
     ops::{BitAnd, BitOr},
     simd::{
         cmp::{SimdPartialEq, SimdPartialOrd},
-        LaneCount, Simd, SupportedLaneCount,
+        LaneCount, Mask, Simd, SupportedLaneCount,
     },
 };
 
@@ -144,7 +143,7 @@ where
         // prepared to behave exactly like the hot loop.
         // This is done by setting the data pointer out of bounds and using a candidate
         // mask that is shifted to have its end align with the start of the
-        // first BYTES aligned chunk.
+        // first BYTES-aligned chunk.
         //
         // Consider these pointers:
         // ----------------dddddddddddddbbbbbbbbbbbbbbbbbbbbbb
@@ -173,11 +172,14 @@ where
             return 0;
         }
 
-        let haystack = Simd::<u8, BYTES>::load_or_default(&data[first_possible..max_offset]);
-
         // compute the first candidates
-
-        let result = Self::build_candidates(&haystack, pattern);
+        let result = unsafe {
+            Self::build_candidates::<true>(
+                &data[first_possible],
+                max_offset - first_possible,
+                pattern,
+            )
+        };
 
         // shift result to align to end of currently aligned (out of bounds starting)
         // slice
@@ -185,14 +187,26 @@ where
     }
 
     fn end_candidates(&mut self) {
-        self.exhausted = true;
-
         // # Safety
-        // self.position is initialized from self.data
-        let position = unsafe { self.position.offset_from(self.data.as_ptr()) } as usize;
-        let data = Simd::<u8, BYTES>::load_or_default(&self.data[position..]);
+        // self.end and self.position are both initialized from self.data
+        let remaining_length =
+            unsafe { (self.end as *const u8).offset_from(self.position) } as usize;
 
-        self.candidates_mask = Self::build_candidates(&data, self.pattern);
+        self.candidates_mask = unsafe {
+            Self::build_candidates::<true>(self.position, remaining_length, self.pattern)
+        };
+    }
+
+    fn end_search(&mut self) -> Option<<Self as Iterator>::Item> {
+        if let Some(position) = unsafe { self.consume_candidates::<true>() } {
+            return Some(position);
+        }
+        if self.position.wrapping_add(BYTES) < self.end {
+            self.position = self.position.wrapping_add(BYTES);
+            self.end_candidates();
+        }
+
+        unsafe { self.consume_candidates::<true>() }
     }
 }
 
@@ -206,11 +220,11 @@ where
         // In case of removing this, make sure self.position is not unconditionally
         // increased to prevent violating FusedIterator guarantees
         if self.exhausted {
-            return self.consume_candidates::<true>();
+            return self.end_search();
         }
 
         loop {
-            if let Some(position) = self.consume_candidates::<false>() {
+            if let Some(position) = unsafe { self.consume_candidates::<false>() } {
                 return Some(position);
             }
 
@@ -220,24 +234,26 @@ where
             // It's near impossible to get close to address usize::max in the real
             // world, allowing to assume that self.position doesn't overflow.
             // This is checked using a debug_assert during init
-            let new_position = self.position.wrapping_add(BYTES);
-            // # Safety
+            //
             // It is okay to unconditionally increase self.position because there is a short
             // circuit at the start of this function. Removing that short circuit will
             // violate FusedIterator guarantees
-            self.position = new_position;
-            // check if the next chunk is fully within bounds
-            if self.position.wrapping_add(BYTES) > self.end {
-                self.end_candidates();
-                return self.consume_candidates::<true>();
+            self.position = self.position.wrapping_add(BYTES);
+            // check if the next 2 chunks are fully within bounds
+            if self.position.wrapping_add(2 * BYTES) > self.end {
+                self.exhausted = true;
+                self.candidates_mask =
+                    unsafe { Self::build_candidates::<false>(self.position, BYTES, self.pattern) };
+
+                return self.end_search();
             }
 
             // # Safety
             // self.position was initialized to be aligned to BYTES, is only ever
             // increased in steps of BYTES, and self.position + BYTES is still within bounds
             // of self.data
-            let chunk: &Simd<u8, BYTES> = unsafe { &*(self.position as *const _) };
-            self.candidates_mask = Self::build_candidates(chunk, self.pattern);
+            self.candidates_mask =
+                unsafe { Self::build_candidates::<false>(self.position, BYTES, self.pattern) };
         }
     }
 }
@@ -281,11 +297,25 @@ where
         bitmask & mask::<ALIGNMENT>()
     }
 
+    /// if `UNALIGNED == false`, then the data pointer must be aligned to
+    /// [`BYTES`] and `data + BYTES <= self.end`
     #[inline]
     #[must_use]
-    fn build_candidates(data: &Simd<u8, BYTES>, pattern: &Pattern<ALIGNMENT>) -> BytesMask {
-        let result = data.simd_eq(pattern.first_bytes);
-        let result = result.bitor(pattern.first_bytes_mask);
+    unsafe fn build_candidates<const UNALIGNED: bool>(
+        data: *const u8,
+        len: usize,
+        pattern: &Pattern<ALIGNMENT>,
+    ) -> BytesMask {
+        let mask = Self::data_len_mask(len);
+        let data = unsafe { Self::load::<UNALIGNED, false>(data, mask) };
+
+        let mut result = data
+            .simd_eq(pattern.first_bytes)
+            .bitor(pattern.first_bytes_mask);
+
+        if UNALIGNED {
+            result = result.bitand(mask)
+        }
         let result = result.to_bitmask();
 
         Self::reduce_bitmask(result)
@@ -301,7 +331,9 @@ where
     // This function is part of the hot loop. There is probably
     // a lot of potential for optimization still in here
     #[inline]
-    fn consume_candidates<const SAFE_READ: bool>(&mut self) -> Option<usize> {
+    unsafe fn consume_candidates<const SAFE_READ: bool>(
+        &mut self,
+    ) -> Option<<Self as Iterator>::Item> {
         loop {
             if self.candidates_mask == 0 {
                 return None;
@@ -310,54 +342,66 @@ where
             let offset = self.candidates_mask.trailing_zeros() as usize;
             self.candidates_mask ^= 1 << offset;
 
+            let offset_ptr = self.position.wrapping_add(offset);
             // # Safety
             // self.position is initialized from self.data
             // self.position is within bounds at this stage
-            let position = unsafe { self.position.offset_from(self.data.as_ptr()) };
-            let position = position as usize + offset;
-            // # Safety
-            // position + offset is within bounds of self.data
-            let offset_ptr = unsafe { self.position.add(offset) };
+            let position = unsafe { offset_ptr.offset_from(self.data.as_ptr()) } as usize;
 
-            let result = if SAFE_READ {
-                let len = (self.data.len() - position).min(BYTES);
+            let data_len_mask = Self::data_len_mask(self.data.len() - position);
+            let data = unsafe { Self::load::<SAFE_READ, true>(offset_ptr, data_len_mask) };
 
-                let mut index = [0u8; BYTES];
-                index
-                    .iter_mut()
-                    .enumerate()
-                    .for_each(|(index, entry)| *entry = index as u8);
-                let index = Simd::<u8, BYTES>::from_array(index);
+            let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
 
-                let data_len_mask = index.simd_lt(Simd::<u8, BYTES>::splat(len as u8));
-                // # Safety
-                // data_len_mask ensures that only valid bytes are read
-                let data = unsafe {
-                    Simd::<u8, BYTES>::load_select_ptr(
-                        offset_ptr,
-                        data_len_mask,
-                        Default::default(),
-                    )
-                };
-                data.simd_eq(self.pattern.bytes)
-                    .bitand(self.pattern.mask)
-                    .bitand(data_len_mask)
-            } else {
-                let mut tmp = core::mem::MaybeUninit::<Simd<u8, BYTES>>::uninit();
-                // # Safety
-                // offset_ptr..(offset_ptr + BYTES) is within bounds of data
-                let data = unsafe {
-                    core::ptr::copy_nonoverlapping(offset_ptr, tmp.as_mut_ptr().cast(), 1);
-                    tmp.assume_init()
-                };
-
-                data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask)
-            };
+            if SAFE_READ {
+                result = result.bitand(data_len_mask)
+            }
 
             if result == self.pattern.mask {
                 return Some(position);
             }
         }
+    }
+
+    /// data_len_mask must be generated using [`Self::data_len_mask`]
+    ///
+    /// if `UNALIGNED == false`, then the data pointer must be aligned to
+    /// [`BYTES`]
+    #[inline]
+    unsafe fn load<const SAFE_READ: bool, const UNALIGNED: bool>(
+        data: *const u8,
+        data_len_mask: Mask<i8, BYTES>,
+    ) -> Simd<u8, BYTES> {
+        if SAFE_READ {
+            // # Safety
+            // data_len_mask ensures that only valid bytes are read
+            Simd::<u8, BYTES>::load_select_ptr(data, data_len_mask, Default::default())
+        } else if UNALIGNED {
+            let mut tmp = core::mem::MaybeUninit::<Simd<u8, BYTES>>::uninit();
+            // # Safety
+            // offset_ptr..(offset_ptr + BYTES) is within bounds of data
+            unsafe {
+                core::ptr::copy_nonoverlapping(data, tmp.as_mut_ptr().cast(), 1);
+                tmp.assume_init()
+            }
+        } else {
+            *(data as *const _)
+        }
+    }
+
+    /// generates a mask that yields true until position `len`
+    #[inline]
+    fn data_len_mask(len: usize) -> Mask<i8, BYTES> {
+        let len = len.min(BYTES);
+
+        let mut index = [0u8; BYTES];
+        index
+            .iter_mut()
+            .enumerate()
+            .for_each(|(index, entry)| *entry = index as u8);
+        let index = Simd::<u8, BYTES>::from_array(index);
+
+        index.simd_lt(Simd::<u8, BYTES>::splat(len as u8))
     }
 }
 
