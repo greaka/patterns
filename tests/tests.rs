@@ -12,12 +12,20 @@ fn all_alignments(pattern: &str, data: &[u8], matches: &[usize]) -> bool {
     let results: Vec<_> = (0..=63)
         .map(|i| {
             with_misaligned(data, i, |data| {
-                catch_unwind(|| parsed.matches(data).collect::<Vec<_>>()).map_err(|msg| {
-                    msg.downcast::<String>()
-                        .map(|s| *s)
-                        .or_else(|msg| msg.downcast::<&str>().map(|s| s.to_string()))
-                        .unwrap_or_else(|_| "other panic".to_owned())
-                })
+                // hide panic backtraces
+                let hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(|_| {}));
+
+                let ret =
+                    catch_unwind(|| parsed.matches(data).collect::<Vec<_>>()).map_err(|msg| {
+                        msg.downcast::<String>()
+                            .map(|s| *s)
+                            .or_else(|msg| msg.downcast::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_else(|_| "other panic".to_owned())
+                    });
+
+                std::panic::set_hook(hook);
+                ret
             })
         })
         .collect();
