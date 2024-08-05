@@ -52,11 +52,11 @@ fn all_alignments(pattern: &str, data: &[u8], matches: &[usize]) -> bool {
     let results_str_tail = run(&data_stretched_tail);
     let results: Vec<Result<Vec<usize>, String>> = run(&data_stretched_head)
         .into_iter()
-        .zip(results_str_tail.into_iter())
+        .zip(results_str_tail)
         .map(|(head, tail)| match (head, tail) {
             (Ok(head), Ok(tail)) => Ok(head
                 .into_iter()
-                .zip(tail.into_iter())
+                .zip(tail)
                 .filter_map(|(h, t)| h.checked_sub(STRETCH).filter(|h| *h == t))
                 .collect()),
             (_, Err(tail)) => Err(tail),

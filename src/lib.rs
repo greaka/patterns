@@ -35,7 +35,7 @@
 use core::{
     cmp::min,
     iter::FusedIterator,
-    ops::{BitAnd, BitOr, Not},
+    ops::{BitAnd, BitOr},
     simd::{
         cmp::{SimdPartialEq, SimdPartialOrd},
         LaneCount, Mask, Simd, SupportedLaneCount,
@@ -69,8 +69,8 @@ where
     candidates_mask: BytesMask,
     /// pointer to first valid byte of data
     data: &'data [u8],
-    /// pointer to last valid byte of data
-    end: &'data u8,
+    /// pointer to one byte past the end of data
+    end: *const u8,
     /// iterator position
     position: *const u8,
     /// indicates that `self.position + BYTES > self.end`
@@ -102,12 +102,10 @@ where
         let _aligned = Self::_ALIGNED;
         debug_assert!(data.len() <= usize::MAX - BYTES);
         debug_assert!(!data.is_empty());
-        debug_assert!(((&data[data.len() - 1]) as *const u8 as usize) < usize::MAX - BYTES);
+        debug_assert!(((&data[data.len() - 1]) as *const u8 as usize) < usize::MAX - 3 * BYTES);
 
         // data + align_offset required to align to BYTES
-        let align_offset = data
-            .as_ptr()
-            .align_offset(core::mem::align_of::<Simd<u8, BYTES>>());
+        let align_offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
         let candidates_mask = Self::initial_candidates(pattern, data, align_offset);
 
         // set position out of bounds.
@@ -123,14 +121,15 @@ where
             .wrapping_add(align_offset)
             .wrapping_offset(-(BYTES as isize));
 
+        let end = unsafe { data.as_ptr().add(data.len()) };
+
         Self {
             pattern,
             data,
-            end: &data[data.len() - 1],
+            end,
             position,
             candidates_mask,
-            // FIXME: check that this is correct, including with unaligned data
-            exhausted: data.len() < BYTES,
+            exhausted: position.wrapping_add(2 * BYTES) >= end,
         }
     }
 
@@ -190,8 +189,7 @@ where
     fn end_candidates(&mut self) {
         // # Safety
         // self.end and self.position are both initialized from self.data
-        let remaining_length =
-            unsafe { (self.end as *const u8).offset_from(self.position) } as usize;
+        let remaining_length = unsafe { self.end.offset_from(self.position) } as usize;
 
         self.candidates_mask = unsafe {
             Self::build_candidates::<true>(self.position, remaining_length, self.pattern)
@@ -241,7 +239,7 @@ where
             // violate FusedIterator guarantees
             self.position = self.position.wrapping_add(BYTES);
             // check if the next 2 chunks are fully within bounds
-            if self.position.wrapping_add(2 * BYTES) > self.end {
+            if self.position.wrapping_add(2 * BYTES) >= self.end {
                 self.exhausted = true;
                 self.candidates_mask =
                     unsafe { Self::build_candidates::<false>(self.position, BYTES, self.pattern) };
@@ -308,6 +306,9 @@ where
         pattern: &Pattern<ALIGNMENT>,
     ) -> BytesMask {
         let mask = Self::data_len_mask(len);
+        // UNALIGNED is the first parameter on purpose
+        // build_candidates is either called fully aligned or at the start or end
+        // of the data slice. a full safe read is required when operating near edges
         let data = unsafe { Self::load::<UNALIGNED, false>(data, mask) };
 
         let mut result = data
@@ -456,9 +457,7 @@ mod tests {
             const ALIGNMENT: usize = 1;
             let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data
-                .as_ptr()
-                .align_offset(core::mem::align_of::<Simd<u8, BYTES>>());
+            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset, 61);
             let result = Scanner::initial_candidates(&pattern, data, offset);
@@ -474,9 +473,7 @@ mod tests {
             const ALIGNMENT: usize = 2;
             let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data
-                .as_ptr()
-                .align_offset(core::mem::align_of::<Simd<u8, BYTES>>());
+            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset, 61);
             let result = Scanner::initial_candidates(&pattern, data, offset);
@@ -492,9 +489,7 @@ mod tests {
             const ALIGNMENT: usize = 4;
             let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data
-                .as_ptr()
-                .align_offset(core::mem::align_of::<Simd<u8, BYTES>>());
+            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset, 61);
             let result = Scanner::initial_candidates(&pattern, data, offset);
@@ -510,9 +505,7 @@ mod tests {
             const ALIGNMENT: usize = 8;
             let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data
-                .as_ptr()
-                .align_offset(core::mem::align_of::<Simd<u8, BYTES>>());
+            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset, 61);
             let result = Scanner::initial_candidates(&pattern, data, offset);
@@ -520,6 +513,24 @@ mod tests {
             let control: BytesMask = 0;
 
             assert_eq!(result, control);
+        }
+    }
+
+    mod regressions {
+        use core::slice;
+
+        use super::*;
+
+        #[test]
+        fn second_chunk_last_byte() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[data.len() - 1] = 1;
+            let pattern = Pattern::<1>::new("01");
+            let mut iter = pattern.matches(data);
+            assert_eq!(iter.next().unwrap(), data.len() - 1);
+            assert!(iter.next().is_none());
         }
     }
 }
