@@ -614,7 +614,7 @@ mod tests {
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[BYTES] = 1;
             let pattern = Pattern::<1>::new("? ? 01");
-            let mut iter = pattern.matches(&data[BYTES - 1..]);
+            let mut iter = pattern.matches(&data[BYTES - 1..BYTES + BYTES / 10]);
             assert!(iter.next().is_none());
         }
 
@@ -625,52 +625,9 @@ mod tests {
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[BYTES] = 1;
             let pattern = Pattern::<1>::new("? 01");
-            let mut iter = pattern.matches(&data[BYTES - 1..]);
+            let mut iter = pattern.matches(&data[BYTES - 1..BYTES + BYTES / 10]);
             assert_eq!(iter.next().unwrap(), 0);
             assert!(iter.next().is_none());
         }
     }
 }
-
-/*
-fn find_in_buffer(pattern: &Pattern, data: &[u8], cursor: &mut &[u8]) -> Option<usize> {
-    loop {
-        if cursor.len() < BYTES + pattern.wildcard_prefix {
-            break None;
-        }
-
-        // We can skip bytes that are wildcards.
-        let search = Simd::from_slice(&cursor[pattern.wildcard_prefix..]);
-        // Look for the first non wildcard byte.
-        let first_byte = search.simd_eq(pattern.first_byte).to_bitmask();
-
-        // If no match was found, shift by the amount of bytes we check at once and
-        // start over.
-        if first_byte == 0 {
-            *cursor = &cursor[BYTES..];
-            continue;
-        }
-        // ... else shift the cursor to match the first match.
-        *cursor = &cursor[first_byte.trailing_zeros() as usize..];
-
-        if cursor.len() < BYTES {
-            break None;
-        }
-
-        let search = Simd::from_slice(cursor);
-        // Check `BYTES` amount of bytes at the same time.
-        let result = search.simd_eq(pattern.bytes);
-        // Filter out results we are not interested in.
-        let filtered_result = result.bitand(pattern.mask);
-        // Save the position within data.
-        // Safety: This is fine because we make sure that cursor always points to data
-        let index = unsafe { cursor.as_ptr().offset_from(data.as_ptr()) }; // Shift the cursor by one to not check the same data again.
-        *cursor = &cursor[1..];
-        // Perform an equality check on all registers of the final result.
-        // Essentially this boils down to `result & mask == mask`
-        if filtered_result == pattern.mask {
-            return Some(index as usize);
-        }
-    }
-}
-*/
