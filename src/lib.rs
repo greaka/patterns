@@ -172,6 +172,11 @@ where
         // |-----------------------x---x|
         //                             ^-shift to end
 
+        // if the data is shorter than the pattern, there will never be a match
+        if data.len() < pattern.length as usize {
+            return 0;
+        }
+
         // data + data_align is the offset of the first possible valid candidate
         // + the offset defined by the candidates pattern
         let data_align = align_offset % ALIGNMENT;
