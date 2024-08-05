@@ -634,5 +634,13 @@ mod tests {
             assert_eq!(iter.next().unwrap(), 0);
             assert!(iter.next().is_none());
         }
+
+        #[test]
+        fn pattern_gt_data() {
+            let data = &[1];
+            let pattern = Pattern::<1>::new("? 01");
+            let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
     }
 }
