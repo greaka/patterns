@@ -102,10 +102,13 @@ where
         let _aligned = Self::_ALIGNED;
         debug_assert!(data.len() <= usize::MAX - BYTES);
         debug_assert!(!data.is_empty());
-        debug_assert!(((&data[data.len() - 1]) as *const u8 as usize) < usize::MAX - 3 * BYTES);
+        debug_assert!(((&data[data.len() - 1]) as *const u8 as usize) <= usize::MAX - 3 * BYTES);
 
         // data + align_offset required to align to BYTES
-        let align_offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
+        let mut align_offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
+        if align_offset == 0 {
+            align_offset = BYTES;
+        }
         let candidates_mask = Self::initial_candidates(pattern, data, align_offset);
 
         // set position out of bounds.
@@ -166,7 +169,7 @@ where
         // data + data_align is the offset of the first possible valid candidate
         // + the offset defined by the candidates pattern
         let data_align = align_offset % ALIGNMENT;
-        let first_possible = data_align + pattern.first_byte_offset;
+        let first_possible = data_align + pattern.first_byte_offset as usize;
         let max_offset = min(align_offset, data.len());
         if first_possible >= max_offset {
             return 0;
@@ -183,13 +186,15 @@ where
 
         // shift result to align to end of currently aligned (out of bounds starting)
         // slice
-        result << (BYTES - align_offset + data_align)
+        result << (BYTES - align_offset + first_possible)
     }
 
     fn end_candidates(&mut self) {
         // # Safety
         // self.end and self.position are both initialized from self.data
-        let remaining_length = unsafe { self.end.offset_from(self.position) } as usize;
+        let remaining_length = unsafe { self.end.offset_from(self.position) };
+        debug_assert!(remaining_length >= 0);
+        let remaining_length = remaining_length as usize;
 
         self.candidates_mask = unsafe {
             Self::build_candidates::<true>(self.position, remaining_length, self.pattern)
@@ -344,13 +349,23 @@ where
             let offset = self.candidates_mask.trailing_zeros() as usize;
             self.candidates_mask ^= 1 << offset;
 
-            let offset_ptr = self.position.wrapping_add(offset);
+            let offset_ptr = self
+                .position
+                .wrapping_add(offset)
+                .wrapping_sub(self.pattern.first_byte_offset as usize);
             // # Safety
             // self.position is initialized from self.data
-            // self.position is within bounds at this stage
-            let position = unsafe { offset_ptr.offset_from(self.data.as_ptr()) } as usize;
+            let position = unsafe { offset_ptr.offset_from(self.data.as_ptr()) };
+            // initial_candidates includes a bounds check at candidates creation
+            // subsequent candidate creations cannot underflow
+            debug_assert!(position >= 0);
+            let position = position as usize;
 
-            let data_len_mask = Self::data_len_mask(self.data.len() - position);
+            let len = self.data.len() - position;
+            if SAFE_READ && len < self.pattern.length as usize {
+                return None;
+            }
+            let data_len_mask = Self::data_len_mask(len);
             let data = unsafe { Self::load::<SAFE_READ, true>(offset_ptr, data_len_mask) };
 
             let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
@@ -463,7 +478,7 @@ mod tests {
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask =
-                0b0001_0000_0000_0100_0000_1000_1000_0001_0000_0010_0010_0000_1000_0001_0001_0000;
+                0b1000_0000_0010_0000_0100_0100_0000_1000_0001_0001_0000_0100_0000_1000_1000_0000;
 
             assert_eq!(result, control);
         }
@@ -479,7 +494,7 @@ mod tests {
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask =
-                0b0001_0000_0000_0100_0000_0000_0000_0001_0000_0000_0000_0000_0000_0001_0001_0000;
+                0b0100_0000_0001_0000_0000_0000_0000_0100_0000_0000_0000_0000_0000_0100_0100_0000;
 
             assert_eq!(result, control);
         }
@@ -495,7 +510,7 @@ mod tests {
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask =
-                0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000;
+                0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000;
 
             assert_eq!(result, control);
         }
@@ -516,6 +531,27 @@ mod tests {
         }
     }
 
+    mod edge_cases {
+        use core::slice;
+
+        use super::*;
+
+        #[test]
+        fn max_wildcard_prefix() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[data.len() - 1 - BYTES] = 1;
+            data[data.len() - 1] = 1;
+            let pattern = "? ".repeat(BYTES - 1) + "01";
+            let pattern = Pattern::<1>::new(&pattern);
+            let mut iter = pattern.matches(data);
+            assert_eq!(iter.next().unwrap(), 0);
+            assert_eq!(iter.next().unwrap(), data.len() - BYTES);
+            assert!(iter.next().is_none());
+        }
+    }
+
     mod regressions {
         use core::slice;
 
@@ -530,6 +566,40 @@ mod tests {
             let pattern = Pattern::<1>::new("01");
             let mut iter = pattern.matches(data);
             assert_eq!(iter.next().unwrap(), data.len() - 1);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn byte_offset_in_consume_candidates() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[1] = 1;
+            let pattern = Pattern::<1>::new("?? 01");
+            let mut iter = pattern.matches(data);
+            assert_eq!(iter.next().unwrap(), 0);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn byte_offset_out_of_bounds_read() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[0] = 1;
+            let pattern = Pattern::<1>::new("?? 01");
+            let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn trailing_wildcard_at_eof() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[data.len() - 1] = 1;
+            let pattern = Pattern::<1>::new("01 ??");
+            let mut iter = pattern.matches(data);
             assert!(iter.next().is_none());
         }
     }

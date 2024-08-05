@@ -21,7 +21,8 @@ where
     /// first bytes mask is inverted
     /// x & mask == mask === x | ^mask == -1
     pub(crate) first_bytes_mask: Mask<i8, BYTES>,
-    pub(crate) first_byte_offset: usize,
+    pub(crate) first_byte_offset: u8,
+    pub(crate) length: u8,
     phantom: PhantomData<[u8; ALIGNMENT]>,
 }
 
@@ -74,7 +75,8 @@ where
             mask,
             first_bytes,
             first_bytes_mask,
-            first_byte_offset,
+            first_byte_offset: first_byte_offset as _,
+            length: length as _,
             phantom: PhantomData,
         }
     }
@@ -138,7 +140,8 @@ where
             mask,
             first_bytes,
             first_bytes_mask,
-            first_byte_offset,
+            first_byte_offset: first_byte_offset as _,
+            length: length as _,
             phantom: PhantomData,
         })
     }
