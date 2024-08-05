@@ -50,14 +50,17 @@ fn all_alignments(pattern: &str, data: &[u8], matches: &[usize]) -> bool {
         .collect::<Vec<_>>();
 
     let results_str_tail = run(&data_stretched_tail);
-    let results: Vec<Result<Vec<usize>, String>> = run(&data_stretched_head)
+    let results_str_head = run(&data_stretched_head);
+    let results: Vec<Result<Vec<usize>, String>> = results_str_head
         .into_iter()
         .zip(results_str_tail)
         .map(|(head, tail)| match (head, tail) {
             (Ok(head), Ok(tail)) => Ok(head
                 .into_iter()
+                .filter_map(|h| h.checked_sub(STRETCH))
                 .zip(tail)
-                .filter_map(|(h, t)| h.checked_sub(STRETCH).filter(|h| *h == t))
+                .filter(|(h, t)| h == t)
+                .map(|(h, _)| h)
                 .collect()),
             (_, Err(tail)) => Err(tail),
             (Err(head), _) => Err(head),
@@ -207,13 +210,10 @@ fn xxh3_data_test() {
 #[test]
 fn overlap() {
     let mut ok = true;
-    ok &= all_alignments(
-        "ab ?? ?? cd",
-        &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd],
-        &[0, 2],
-    );
-    ok &= all_alignments("ab ?? ??", &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd], &[0, 2]);
-    ok &= all_alignments("?? ?? cd", &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd], &[1, 3]);
+    let data = &[0xab, 0xcd, 0xab, 0xcd, 0xab, 0xcd];
+    ok &= all_alignments("ab ?? ?? cd", data, &[0, 2]);
+    ok &= all_alignments("ab ?? ??", data, &[0, 2]);
+    ok &= all_alignments("?? ?? cd", data, &[1, 3]);
     assert!(ok);
 }
 

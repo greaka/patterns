@@ -42,7 +42,7 @@ use core::{
     },
 };
 
-use crate::pattern::Pattern;
+pub use crate::pattern::Pattern;
 
 pub mod pattern;
 mod utils;
@@ -109,6 +109,11 @@ where
         if align_offset == 0 {
             align_offset = BYTES;
         }
+        let data_align = align_offset % ALIGNMENT;
+        let first_possible = data_align + pattern.first_byte_offset as usize;
+        if align_offset <= first_possible {
+            align_offset += BYTES;
+        }
         let candidates_mask = Self::initial_candidates(pattern, data, align_offset);
 
         // set position out of bounds.
@@ -136,6 +141,7 @@ where
         }
     }
 
+    #[inline]
     fn initial_candidates(
         pattern: &Pattern<ALIGNMENT>,
         data: &[u8],
@@ -171,9 +177,7 @@ where
         let data_align = align_offset % ALIGNMENT;
         let first_possible = data_align + pattern.first_byte_offset as usize;
         let max_offset = min(align_offset, data.len());
-        if first_possible >= max_offset {
-            return 0;
-        }
+        debug_assert!(first_possible < max_offset);
 
         // compute the first candidates
         let result = unsafe {
@@ -186,7 +190,7 @@ where
 
         // shift result to align to end of currently aligned (out of bounds starting)
         // slice
-        result << (BYTES - align_offset + first_possible)
+        result << (BYTES + first_possible - align_offset)
     }
 
     fn end_candidates(&mut self) {
@@ -600,6 +604,29 @@ mod tests {
             data[data.len() - 1] = 1;
             let pattern = Pattern::<1>::new("01 ??");
             let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn leading_wildcard_underflow() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[BYTES] = 1;
+            let pattern = Pattern::<1>::new("? ? 01");
+            let mut iter = pattern.matches(&data[BYTES - 1..]);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn leading_wildcard_boundary() {
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[BYTES] = 1;
+            let pattern = Pattern::<1>::new("? 01");
+            let mut iter = pattern.matches(&data[BYTES - 1..]);
+            assert_eq!(iter.next().unwrap(), 0);
             assert!(iter.next().is_none());
         }
     }
