@@ -26,6 +26,7 @@
 
 // todos
 // optimize pattern.len() <= alignment
+// explore getting rid of pattern.length
 
 #![feature(portable_simd)]
 #![no_std]
@@ -292,36 +293,6 @@ impl<'pattern, 'data, const ALIGNMENT: usize> Scanner<'pattern, 'data, ALIGNMENT
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
 {
-    /// filters the bitmask to valid chunks, little endian least significant bit
-    /// remains set
-    ///
-    /// ```text
-    /// ALIGNMENT = 4
-    /// start:  1111 1110 1101 1111
-    /// result: 0001 0000 0000 0001
-    /// ```
-    #[inline]
-    const fn reduce_bitmask(mut bitmask: BytesMask) -> BytesMask {
-        let mut shift = 1;
-        while shift < ALIGNMENT {
-            bitmask &= bitmask >> shift;
-            shift <<= 1;
-        }
-
-        const fn mask<const ALIGNMENT: usize>() -> BytesMask {
-            let pattern = 1;
-            let mut mask = 0;
-            let mut i = 0;
-            while i < BYTES / ALIGNMENT {
-                mask |= pattern << (ALIGNMENT * i);
-                i += 1;
-            }
-            mask
-        }
-
-        bitmask & mask::<ALIGNMENT>()
-    }
-
     /// if `UNALIGNED == false`, then the data pointer must be aligned to
     /// [`BYTES`] and `data + BYTES <= self.end`
     ///
@@ -330,24 +301,25 @@ where
     #[must_use]
     unsafe fn build_candidates<const UNALIGNED: bool>(
         data: *const u8,
-        mut len: usize,
+        len: usize,
         pattern: &Pattern<ALIGNMENT>,
     ) -> BytesMask {
-        len += ALIGNMENT.saturating_sub(pattern.length as _);
-        let mask = Self::data_len_mask(len);
+        let len_mask = Self::data_len_mask(len);
         // UNALIGNED is the first parameter on purpose
         // build_candidates is either called fully aligned or at the start or end
         // of the data slice. a full safe read is required when operating near edges
-        let data = unsafe { Self::load::<UNALIGNED, false>(data, mask) };
+        let data = unsafe { Self::load::<UNALIGNED, false>(data, len_mask) };
 
         let mut result = data
             .simd_eq(pattern.first_bytes)
-            .bitor(pattern.first_bytes_mask);
+            .bitor(pattern.first_bytes_mask)
+            .to_bitmask();
 
         if UNALIGNED {
-            result = result.bitand(mask)
+            let mask =
+                Self::mask_min_len(len_mask.to_bitmask(), pattern.first_bytes_mask.to_bitmask());
+            result &= mask;
         }
-        let result = result.to_bitmask();
 
         Self::reduce_bitmask(result)
     }
@@ -395,7 +367,7 @@ where
             let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
 
             if SAFE_READ {
-                result = result.bitand(data_len_mask)
+                result &= data_len_mask;
             }
 
             if result == self.pattern.mask {
@@ -437,6 +409,77 @@ where
         let index = Simd::<u8, BYTES>::from_array(index);
 
         index.simd_lt(Simd::<u8, BYTES>::splat(len as u8))
+    }
+
+    /// Extends a length mask to ALIGNMENT if the given pattern mask fills the
+    /// remaining bits until ALIGNMENT
+    ///
+    /// ```text
+    /// mask  1011_1011_1011
+    /// len   1111_1100_0000
+    /// res   1111_1111_0000
+    ///
+    /// mask  1101_1101_1101
+    /// len   1111_1000_0000
+    /// res   1111_1000_0000
+    /// ```
+    const fn mask_min_len(len: BytesMask, pattern_mask: BytesMask) -> BytesMask {
+        let groups = Self::reduce_bitmask(pattern_mask | len);
+        // 1000_1000_0000
+        let spread = Self::extend_bitmask(groups);
+        // 1111_1111_0000
+        spread | len
+    }
+
+    const fn chunk_mask() -> BytesMask {
+        let pattern = 1;
+        let mut mask = 0;
+        let mut i = 0;
+        while i < BYTES / ALIGNMENT {
+            mask |= pattern << (ALIGNMENT * i);
+            i += 1;
+        }
+        mask
+    }
+
+    /// filters the bitmask to valid chunks, little endian least-significant bit
+    /// remains set
+    ///
+    /// ```text
+    /// ALIGNMENT = 4
+    /// start:  1111 1110 1101 1111
+    /// result: 0001 0000 0000 0001
+    /// ```
+    #[inline]
+    const fn reduce_bitmask(mut bitmask: BytesMask) -> BytesMask {
+        let mut shift = 1;
+        while shift < ALIGNMENT {
+            bitmask &= bitmask >> shift;
+            shift <<= 1;
+        }
+
+        bitmask & Self::chunk_mask()
+    }
+
+    /// extends the bitmask to entire chunks, little endian least-significant
+    /// bit indicates chunk to extend
+    ///
+    /// ```text
+    /// ALIGNMENT = 4
+    /// start:  0101 1000 0010 0001
+    /// result: 1111 0000 0000 1111
+    /// ```
+    #[inline]
+    const fn extend_bitmask(mut bitmask: BytesMask) -> BytesMask {
+        bitmask &= Self::chunk_mask();
+
+        let mut shift = 1;
+        while shift < ALIGNMENT {
+            bitmask |= bitmask << shift;
+            shift <<= 1;
+        }
+
+        bitmask
     }
 }
 
@@ -481,6 +524,41 @@ mod tests {
         fn reduce_align_8() {
             let reduced = Scanner::<'_, '_, 8>::reduce_bitmask(MASK);
             let control = 0;
+
+            assert_eq!(reduced, control);
+        }
+
+        #[test]
+        fn extend_align_1() {
+            let reduced = Scanner::<'_, '_, 1>::extend_bitmask(MASK);
+            let control = MASK;
+
+            assert_eq!(reduced, control);
+        }
+
+        #[test]
+        fn extend_align_2() {
+            let reduced = Scanner::<'_, '_, 2>::extend_bitmask(MASK);
+            let control =
+                0b1111_1100_1111_0011_1111_1100_0000_0011_1111_0011_1100_0000_1100_0000_0011_0000;
+
+            assert_eq!(reduced, control);
+        }
+
+        #[test]
+        fn extend_align_4() {
+            let reduced = Scanner::<'_, '_, 4>::extend_bitmask(MASK);
+            let control =
+                0b1111_0000_1111_1111_1111_0000_0000_1111_1111_1111_0000_0000_0000_0000_1111_0000;
+
+            assert_eq!(reduced, control);
+        }
+
+        #[test]
+        fn extend_align_8() {
+            let reduced = Scanner::<'_, '_, 8>::extend_bitmask(MASK);
+            let control =
+                0b0000_0000_1111_1111_0000_0000_1111_1111_1111_1111_0000_0000_0000_0000_0000_0000;
 
             assert_eq!(reduced, control);
         }
@@ -674,6 +752,17 @@ mod tests {
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             let mut iter = pat.matches(&data[BYTES - 1..BYTES + 2]);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn leading_wildcards_match_start_to_end() {
+            let pat = Pattern::<2>::new("? ? ? ? 00");
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            let mut iter = pat.matches(&data[10..15]);
+            assert_eq!(iter.next().unwrap(), 0);
             assert!(iter.next().is_none());
         }
     }
