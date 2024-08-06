@@ -6,7 +6,7 @@ use core::{
     str::FromStr,
 };
 
-use crate::{const_utils, Scanner};
+use crate::{const_utils, Scanner, VUNKNOWN as DEFAULT_BYTES};
 
 /// A prepared pattern. Allows to search for a given byte sequence in data.
 /// Supports masking and alignment requirements.
@@ -17,7 +17,7 @@ use crate::{const_utils, Scanner};
 /// inner loops for that.
 /// It is also the max length for patterns.
 #[derive(Clone, Debug)]
-pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = 64>
+pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = DEFAULT_BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
     LaneCount<BYTES>: SupportedLaneCount,

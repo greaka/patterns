@@ -40,13 +40,65 @@ mod masks;
 mod pattern;
 mod scanner;
 
-/// Determines the LANES size.
-/// Every block of data is processed in chunks of `BYTES` bytes.
-/// Rust will compile this to other targets without issue, but will use inner
-/// loops for that.
-//pub const BYTES: usize = 64;
 /// The type that holds a bit for each byte in [`BYTES`]
 pub type BytesMask = u64;
+
+const V128: usize = 16;
+const V256: usize = 32;
+const V512: usize = 64;
+const VUNKNOWN: usize = V512;
+
+/// Provides a constant optimizing `BYTES` (see [`Pattern`]) to target cpu simd
+/// width.
+///
+/// Note that `BYTES` also determines maximum pattern length.
+pub const OPTIMAL_BYTES: usize = default_vector_target_width();
+
+const fn default_vector_target_width() -> usize {
+    if (cfg!(target_arch = "arm") || cfg!(target_arch = "aarch64")) && cfg!(target_feature = "neon")
+    {
+        return V128;
+    }
+    if cfg!(target_arch = "hexagon") {
+        if cfg!(target_feature = "hvx-length128b") {
+            // 1024 bits
+            return V512;
+        }
+        if cfg!(target_feature = "hvx") {
+            return V512;
+        }
+    }
+    if cfg!(target_arch = "mips") && cfg!(target_feature = "msa") {
+        return V128;
+    }
+    if cfg!(target_arch = "powerpc")
+        && (cfg!(target_feature = "vsx") || cfg!(target_feature = "altivec"))
+    {
+        return V128;
+    }
+    if (cfg!(target_arch = "riscv32") || cfg!(target_arch = "riscv64"))
+        && cfg!(target_feature = "v")
+    {
+        return V128;
+    }
+    if (cfg!(target_arch = "wasm32") || cfg!(target_arch = "wasm64"))
+        && cfg!(target_feature = "simd128")
+    {
+        return V128;
+    }
+    if cfg!(target_arch = "x86") {
+        if cfg!(target_feature = "avx512f") {
+            return V512;
+        }
+        if cfg!(target_feature = "avx2") {
+            return V256;
+        }
+        if cfg!(target_feature = "sse2") {
+            return V128;
+        }
+    }
+    VUNKNOWN
+}
 
 #[cfg(test)]
 mod tests {
