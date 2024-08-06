@@ -32,40 +32,7 @@ fn all_alignments(pattern: &str, data: &[u8], matches: &[usize]) -> bool {
             .collect()
     };
 
-    // let results = run(data);
-
-    // FIXME: workaround since lib currently broken on small dataset
-    // The data is "stretched" by prepending or appending 128 bytes.
-    const STRETCH: usize = 128;
-    const STRETCH_WITH: u8 = 0x99;
-
-    let data_stretched_tail = data
-        .iter()
-        .copied()
-        .chain(std::iter::repeat(STRETCH_WITH).take(STRETCH))
-        .collect::<Vec<_>>();
-    let data_stretched_head = std::iter::repeat(STRETCH_WITH)
-        .take(STRETCH)
-        .chain(data.iter().copied())
-        .collect::<Vec<_>>();
-
-    let results_str_tail = run(&data_stretched_tail);
-    let results_str_head = run(&data_stretched_head);
-    let results: Vec<Result<Vec<usize>, String>> = results_str_head
-        .into_iter()
-        .zip(results_str_tail)
-        .map(|(head, tail)| match (head, tail) {
-            (Ok(head), Ok(tail)) => Ok(head
-                .into_iter()
-                .filter_map(|h| h.checked_sub(STRETCH))
-                .zip(tail)
-                .filter(|(h, t)| h == t)
-                .map(|(h, _)| h)
-                .collect()),
-            (_, Err(tail)) => Err(tail),
-            (Err(head), _) => Err(head),
-        })
-        .collect();
+    let results = run(data);
 
     if results
         .iter()
@@ -177,6 +144,7 @@ fn basic() {
 fn leading_wildcard() {
     let mut ok = true;
     ok &= all_alignments("? 42", &[0x42], &[]);
+    ok &= all_alignments("? 42", &[0x42, 0x22], &[]);
     ok &= all_alignments("? 42", &[0x22, 0x42], &[0]);
     assert!(ok);
 }
