@@ -2,7 +2,7 @@ mod common;
 use std::{collections::HashMap, panic::catch_unwind};
 
 use common::*;
-use patterns::pattern::*;
+use patterns::*;
 
 #[track_caller]
 fn all_alignments(pattern: &str, data: &[u8], matches: &[usize]) -> bool {

@@ -6,7 +6,7 @@ use core::{
     str::FromStr,
 };
 
-use crate::{utils, Scanner, BYTES};
+use crate::{const_utils, Scanner, BYTES};
 
 /// A prepared pattern. Allows to search for a given byte sequence in data.
 /// Supports masking and alignment requirements.
@@ -82,7 +82,7 @@ where
     }
 
     pub const fn from_str(s: &str) -> Result<Self, ParsePatternError> {
-        let bytes = utils::SplitAsciiWhitespace::new(s);
+        let bytes = const_utils::SplitAsciiWhitespace::new(s);
 
         let length = bytes.clone().count();
         if length > BYTES {
@@ -103,8 +103,8 @@ where
                     None => break,
                 };
 
-                if !utils::is_wildcard(byte) {
-                    let parsed = match utils::hex_to_u8(byte) {
+                if !const_utils::is_wildcard(byte) {
+                    let parsed = match const_utils::hex_to_u8(byte) {
                         Ok(parsed) => parsed,
                         Err(e) => return Err(ParsePatternError::InvalidHexNumber(e)),
                     };
