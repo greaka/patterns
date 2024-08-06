@@ -1,10 +1,12 @@
 use core::simd::{cmp::SimdPartialOrd, LaneCount, Mask, Simd, SupportedLaneCount};
 
-use crate::{BytesMask, Scanner, BYTES};
+use crate::{BytesMask, Scanner};
 
-impl<'pattern, 'data, const ALIGNMENT: usize> Scanner<'pattern, 'data, ALIGNMENT>
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
+    Scanner<'pattern, 'data, ALIGNMENT, BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// generates a mask that yields true until position `len`
     #[inline]
@@ -99,71 +101,80 @@ mod tests {
 
     const MASK: BytesMask =
         0b1111_1110_1101_1011_0111_1100_1010_1001_0101_0011_0110_1000_0100_0010_0001_0000;
+    const BYTES: usize = 64;
 
     #[test]
     fn reduce_align_1() {
-        let reduced = Scanner::<'_, '_, 1>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 1, BYTES>::reduce_bitmask(MASK);
         let control = MASK;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn reduce_align_2() {
-        let reduced = Scanner::<'_, '_, 2>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 2, BYTES>::reduce_bitmask(MASK);
         let control =
             0b0101_0100_0100_0001_0001_0100_0000_0000_0000_0001_0000_0000_0000_0000_0000_0000;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn reduce_align_4() {
-        let reduced = Scanner::<'_, '_, 4>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 4, BYTES>::reduce_bitmask(MASK);
         let control = 1 << 60;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn reduce_align_8() {
-        let reduced = Scanner::<'_, '_, 8>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 8, BYTES>::reduce_bitmask(MASK);
         let control = 0;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn extend_align_1() {
-        let reduced = Scanner::<'_, '_, 1>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 1, BYTES>::extend_bitmask(MASK);
         let control = MASK;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn extend_align_2() {
-        let reduced = Scanner::<'_, '_, 2>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 2, BYTES>::extend_bitmask(MASK);
         let control =
             0b1111_1100_1111_0011_1111_1100_0000_0011_1111_0011_1100_0000_1100_0000_0011_0000;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn extend_align_4() {
-        let reduced = Scanner::<'_, '_, 4>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 4, BYTES>::extend_bitmask(MASK);
         let control =
             0b1111_0000_1111_1111_1111_0000_0000_1111_1111_1111_0000_0000_0000_0000_1111_0000;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }
 
     #[test]
     fn extend_align_8() {
-        let reduced = Scanner::<'_, '_, 8>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 8, BYTES>::extend_bitmask(MASK);
         let control =
             0b0000_0000_1111_1111_0000_0000_1111_1111_1111_1111_0000_0000_0000_0000_0000_0000;
+        let control = control & (u64::MAX >> (64 - BYTES));
 
         assert_eq!(reduced, control);
     }

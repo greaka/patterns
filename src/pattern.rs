@@ -6,14 +6,21 @@ use core::{
     str::FromStr,
 };
 
-use crate::{const_utils, Scanner, BYTES};
+use crate::{const_utils, Scanner};
 
 /// A prepared pattern. Allows to search for a given byte sequence in data.
 /// Supports masking and alignment requirements.
+///
+/// [`BYTES`] Determines the LANES size.
+/// Every block of data is processed in chunks of `BYTES` bytes.
+/// Rust will compile this to other targets without issue, but will use
+/// inner loops for that.
+/// It is also the max length for patterns.
 #[derive(Clone, Debug)]
-pub struct Pattern<const ALIGNMENT: usize = 1>
+pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = 64>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     pub(crate) bytes: Simd<u8, BYTES>,
     pub(crate) mask: Mask<i8, BYTES>,
@@ -26,9 +33,10 @@ where
     phantom: PhantomData<[u8; ALIGNMENT]>,
 }
 
-impl<const ALIGNMENT: usize> Pattern<ALIGNMENT>
+impl<const ALIGNMENT: usize, const BYTES: usize> Pattern<ALIGNMENT, BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// Parse a pattern. Use the [`FromStr`] impl to return an error instead of
     /// panicking.
@@ -65,7 +73,7 @@ where
 
         let first_byte_offset = find_first_byte_offset::<ALIGNMENT>(mask_array).unwrap();
 
-        let (first_bytes, first_bytes_mask) = fill_first_bytes::<ALIGNMENT>(
+        let (first_bytes, first_bytes_mask) = fill_first_bytes::<ALIGNMENT, BYTES>(
             &input[first_byte_offset..],
             &mask_array[first_byte_offset..],
         );
@@ -125,15 +133,13 @@ where
 
         let (_, chunk) = buffer.split_at(first_byte_offset);
         let (_, mask_chunk) = mask.split_at(first_byte_offset);
-        let (first_bytes, first_bytes_mask) = fill_first_bytes::<ALIGNMENT>(chunk, mask_chunk);
+        let (first_bytes, first_bytes_mask) =
+            fill_first_bytes::<ALIGNMENT, BYTES>(chunk, mask_chunk);
 
         // There is no const way to create a Mask
         // # Safety: Mask is defined as repr transparent over Simd<T>
-        let mask = unsafe {
-            core::mem::transmute::<Simd<i8, BYTES>, Mask<i8, BYTES>>(Simd::<i8, BYTES>::from_array(
-                mask,
-            ))
-        };
+        let mask = Simd::from_array(mask);
+        let mask = unsafe { *(&mask as *const _ as *const _) };
 
         Ok(Self {
             bytes: Simd::<u8, BYTES>::from_array(buffer),
@@ -151,7 +157,7 @@ where
     pub fn matches<'pattern, 'data>(
         &'pattern self,
         data: &'data [u8],
-    ) -> Scanner<'pattern, 'data, ALIGNMENT> {
+    ) -> Scanner<'pattern, 'data, ALIGNMENT, BYTES> {
         Scanner::new(self, data)
     }
 }
@@ -192,10 +198,14 @@ const fn find_first_byte_offset<const ALIGNMENT: usize>(
     }
 }
 
-const fn fill_first_bytes<const ALIGNMENT: usize>(
+const fn fill_first_bytes<const ALIGNMENT: usize, const BYTES: usize>(
     chunk: &[u8],
     mask: &[i8],
-) -> (Simd<u8, BYTES>, Mask<i8, BYTES>) {
+) -> (Simd<u8, BYTES>, Mask<i8, BYTES>)
+where
+    LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
+{
     let mut first = [0u8; BYTES];
     let mut first_mask = [0i8; BYTES];
 
@@ -214,9 +224,8 @@ const fn fill_first_bytes<const ALIGNMENT: usize>(
     let bytes = Simd::from_array(first);
     // There is no const way to create a Mask
     // # Safety: Mask is defined as repr transparent over Simd<T>
-    let mask = unsafe {
-        core::mem::transmute::<Simd<i8, BYTES>, Mask<i8, BYTES>>(Simd::from_array(first_mask))
-    };
+    let mask = Simd::from_array(first_mask);
+    let mask = unsafe { *(&mask as *const _ as *const _) };
 
     (bytes, mask)
 }

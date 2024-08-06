@@ -5,16 +5,17 @@ use core::{
     simd::{cmp::SimdPartialEq, LaneCount, Mask, Simd, SupportedLaneCount},
 };
 
-use crate::{BytesMask, Pattern, BYTES};
+use crate::{BytesMask, Pattern};
 
 /// An [`Iterator`] for searching a given [`Pattern`] in data
 #[must_use]
-pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize>
+pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// needle
-    pattern: &'pattern Pattern<ALIGNMENT>,
+    pattern: &'pattern Pattern<ALIGNMENT, BYTES>,
     /// one bit for each byte in [`BYTES`]
     /// little endian least significant bit corresponds to the first byte in the
     /// current slice of data
@@ -29,9 +30,11 @@ where
     exhausted: bool,
 }
 
-impl<'pattern, 'data, const ALIGNMENT: usize> Scanner<'pattern, 'data, ALIGNMENT>
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
+    Scanner<'pattern, 'data, ALIGNMENT, BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     const _ALIGNED: bool = Self::validate_alignment();
 
@@ -50,22 +53,14 @@ where
     /// In the real world, it's near impossible to create a buffer near the size
     /// of [`usize::max`]. This reserved space is required to keep the hot loop
     /// efficient while still providing a correct algorithm.
-    pub fn new(pattern: &'pattern Pattern<ALIGNMENT>, data: &'data [u8]) -> Self {
+    pub fn new(pattern: &'pattern Pattern<ALIGNMENT, BYTES>, data: &'data [u8]) -> Self {
         let _aligned = Self::_ALIGNED;
         debug_assert!(data.len() <= usize::MAX - BYTES);
         debug_assert!(!data.is_empty());
         debug_assert!(((&data[data.len() - 1]) as *const u8 as usize) <= usize::MAX - 3 * BYTES);
 
         // data + align_offset required to align to BYTES
-        let mut align_offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
-        if align_offset == 0 {
-            align_offset = BYTES;
-        }
-        let data_align = align_offset % ALIGNMENT;
-        let first_possible = data_align + pattern.first_byte_offset as usize;
-        if align_offset <= first_possible {
-            align_offset += BYTES;
-        }
+        let align_offset = Self::first_offset(data.as_ptr(), pattern.first_byte_offset);
         let candidates_mask = Self::initial_candidates(pattern, data, align_offset);
 
         // set position out of bounds.
@@ -93,9 +88,22 @@ where
         }
     }
 
+    fn first_offset(data: *const u8, first_byte_offset: u8) -> usize {
+        let mut align_offset = data.align_offset(align_of::<Simd<u8, BYTES>>());
+        if align_offset == 0 {
+            align_offset = BYTES;
+        }
+        let data_align = align_offset % ALIGNMENT;
+        let first_possible = data_align + first_byte_offset as usize;
+        if align_offset <= first_possible {
+            align_offset += BYTES;
+        }
+        align_offset
+    }
+
     #[inline]
     fn initial_candidates(
-        pattern: &Pattern<ALIGNMENT>,
+        pattern: &Pattern<ALIGNMENT, BYTES>,
         data: &[u8],
         align_offset: usize,
     ) -> BytesMask {
@@ -188,9 +196,11 @@ where
     }
 }
 
-impl<'pattern, 'data, const ALIGNMENT: usize> Iterator for Scanner<'pattern, 'data, ALIGNMENT>
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> Iterator
+    for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     type Item = usize;
 
@@ -236,14 +246,19 @@ where
     }
 }
 
-impl<'pattern, 'data, const ALIGNMENT: usize> FusedIterator for Scanner<'pattern, 'data, ALIGNMENT> where
-    LaneCount<ALIGNMENT>: SupportedLaneCount
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> FusedIterator
+    for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
+where
+    LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
 }
 
-impl<'pattern, 'data, const ALIGNMENT: usize> Scanner<'pattern, 'data, ALIGNMENT>
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
+    Scanner<'pattern, 'data, ALIGNMENT, BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// if `UNALIGNED == false`, then the data pointer must be aligned to
     /// [`BYTES`] and `data + BYTES <= self.end`
@@ -254,7 +269,7 @@ where
     unsafe fn build_candidates<const UNALIGNED: bool>(
         data: *const u8,
         len: usize,
-        pattern: &Pattern<ALIGNMENT>,
+        pattern: &Pattern<ALIGNMENT, BYTES>,
     ) -> BytesMask {
         let len_mask = Self::data_len_mask(len);
         // UNALIGNED is the first parameter on purpose
@@ -354,11 +369,12 @@ mod tests {
     use super::*;
 
     const PATTERN: &str = "? ? ? 46 41 ? 54";
+    const BYTES: usize = 64;
 
     mod candidates {
         use super::*;
 
-        static DATA: Simd<u8, BYTES> = Simd::from_array([
+        static DATA: Simd<u8, 64> = Simd::from_array([
             0, 0, 0, 0, 0, 0, 0, 0x46, 0x41, 0x53, 0x54, 0x46, 0x41, 0, 0, 0, 0, 0, 0x46, 0, 0, 0,
             0, 0, 0x46, 0x41, 0x53, 0x54, 0x46, 0x41, 0, 0, 0, 0, 0, 0x46, 0, 0, 0, 0, 0, 0, 0x46,
             0x41, 0x53, 0x54, 0x46, 0x41, 0, 0, 0, 0, 0, 0x46, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x46,
@@ -367,15 +383,17 @@ mod tests {
         #[test]
         fn initial_candidates_1() {
             const ALIGNMENT: usize = 1;
-            let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
+            let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
+            let offset =
+                Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
-            assert_eq!(offset, 61);
+            assert_eq!(offset % BYTES, BYTES - 3);
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask =
                 0b1000_0000_0010_0000_0100_0100_0000_1000_0001_0001_0000_0100_0000_1000_1000_0000;
+            let control = control >> ((offset / BYTES) * BYTES) & (u64::MAX >> (64 - BYTES));
 
             assert_eq!(result, control);
         }
@@ -383,15 +401,17 @@ mod tests {
         #[test]
         fn initial_candidates_2() {
             const ALIGNMENT: usize = 2;
-            let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
+            let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
+            let offset =
+                Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
-            assert_eq!(offset, 61);
+            assert_eq!(offset % BYTES, BYTES - 3);
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask =
                 0b0100_0000_0001_0000_0000_0000_0000_0100_0000_0000_0000_0000_0000_0100_0100_0000;
+            let control = control >> ((offset / BYTES) * BYTES) & (u64::MAX >> (64 - BYTES));
 
             assert_eq!(result, control);
         }
@@ -399,15 +419,17 @@ mod tests {
         #[test]
         fn initial_candidates_4() {
             const ALIGNMENT: usize = 4;
-            let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
+            let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
+            let offset =
+                Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
-            assert_eq!(offset, 61);
+            assert_eq!(offset % BYTES, BYTES - 3);
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask =
                 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000;
+            let control = control >> ((offset / BYTES) * BYTES) & (u64::MAX >> (64 - BYTES));
 
             assert_eq!(result, control);
         }
@@ -415,14 +437,16 @@ mod tests {
         #[test]
         fn initial_candidates_8() {
             const ALIGNMENT: usize = 8;
-            let pattern = Pattern::<ALIGNMENT>::new(PATTERN);
+            let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
             let data = &DATA[3..];
-            let offset = data.as_ptr().align_offset(align_of::<Simd<u8, BYTES>>());
+            let offset =
+                Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
-            assert_eq!(offset, 61);
+            assert_eq!(offset % BYTES, BYTES - 3);
             let result = Scanner::initial_candidates(&pattern, data, offset);
 
             let control: BytesMask = 0;
+            let control = control >> ((offset / BYTES) * BYTES) & (u64::MAX >> (64 - BYTES));
 
             assert_eq!(result, control);
         }
