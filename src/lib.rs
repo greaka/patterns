@@ -172,16 +172,28 @@ where
         // |-----------------------x---x|
         //                             ^-shift to end
 
-        // if the data is shorter than the pattern, there will never be a match
-        if data.len() < pattern.length as usize {
-            return 0;
-        }
-
         // data + data_align is the offset of the first possible valid candidate
         // + the offset defined by the candidates pattern
         let data_align = align_offset % ALIGNMENT;
+
+        // if the data is shorter than the pattern, there will never be a match
+        if data.len().saturating_sub(data_align) < pattern.length as usize {
+            return 0;
+        }
+
         let first_possible = data_align + pattern.first_byte_offset as usize;
         let max_offset = min(align_offset, data.len());
+        // alignment_first_possible_eq_data() is an edge case where valid inputs
+        // can trigger this branch
+        //
+        // it is fine to not check candidates in this case because the pattern specifies
+        // a required alignment. the alignment requirement reduces the amount of
+        // valid bytes in data, essentially causing
+        // `data[data_align..].len() < pattern.length`
+        //
+        // if first_possible == max_offset {
+        //     return 0;
+        // }
         debug_assert!(first_possible < max_offset);
 
         // compute the first candidates
@@ -652,6 +664,16 @@ mod tests {
             let data = &[0, 0x05, 0xff, 0xf7, 0x00];
             let mut iter = pat.matches(&data[1..]);
             assert_eq!(iter.next().unwrap(), 3);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn alignment_first_possible_eq_data() {
+            let pat = Pattern::<2>::new("? ? 01");
+            let mut data: [Simd<u8, BYTES>; 2] = [Default::default(); 2];
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            let mut iter = pat.matches(&data[BYTES - 1..BYTES + 2]);
             assert!(iter.next().is_none());
         }
     }
