@@ -312,13 +312,16 @@ where
 
     /// if `UNALIGNED == false`, then the data pointer must be aligned to
     /// [`BYTES`] and `data + BYTES <= self.end`
+    ///
+    /// `data` must always be aligned to `ALIGNMENT`!
     #[inline]
     #[must_use]
     unsafe fn build_candidates<const UNALIGNED: bool>(
         data: *const u8,
-        len: usize,
+        mut len: usize,
         pattern: &Pattern<ALIGNMENT>,
     ) -> BytesMask {
+        len += ALIGNMENT.saturating_sub(pattern.length as _);
         let mask = Self::data_len_mask(len);
         // UNALIGNED is the first parameter on purpose
         // build_candidates is either called fully aligned or at the start or end
@@ -640,6 +643,15 @@ mod tests {
             let data = &[1];
             let pattern = Pattern::<1>::new("? 01");
             let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn pattern_lt_alignment() {
+            let pat = Pattern::<2>::new("00");
+            let data = &[0, 0x05, 0xff, 0xf7, 0x00];
+            let mut iter = pat.matches(&data[1..]);
+            assert_eq!(iter.next().unwrap(), 3);
             assert!(iter.next().is_none());
         }
     }
