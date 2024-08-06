@@ -1,0 +1,22 @@
+[package]
+name = "patterns-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+aligned-vec = "0.6.1"
+arbitrary = "1.3.2"
+libfuzzer-sys = "0.4"
+patterns.path = ".."
+reference.path = "../reference"
+
+[[bin]]
+name = "diff"
+path = "fuzz_targets/diff.rs"
+test = false
+doc = false
+bench = false
