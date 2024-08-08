@@ -160,7 +160,7 @@ where
         // compute the first candidates
         let result = unsafe {
             Self::build_candidates::<true>(
-                &data[first_possible],
+                data.as_ptr().add(first_possible),
                 max_offset - first_possible,
                 pattern,
             )
@@ -366,6 +366,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::slice;
+
     use super::*;
 
     const PATTERN: &str = "? ? ? 46 41 ? 54";
@@ -449,6 +451,137 @@ mod tests {
             let control = control >> ((offset / BYTES) * BYTES) & (u64::MAX >> (64 - BYTES));
 
             assert_eq!(result, control);
+        }
+    }
+
+    mod regressions {
+
+        use super::*;
+
+        #[test]
+        fn second_chunk_last_byte() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[data.len() - 1] = 1;
+            let pattern = Pattern::<1, BYTES>::new("01");
+            let mut iter = pattern.matches(data);
+            assert_eq!(iter.next().unwrap(), data.len() - 1);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn byte_offset_in_consume_candidates() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[1] = 1;
+            let pattern = Pattern::<1, BYTES>::new("?? 01");
+            let mut iter = pattern.matches(data);
+            assert_eq!(iter.next().unwrap(), 0);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn byte_offset_out_of_bounds_read() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[0] = 1;
+            let pattern = Pattern::<1, BYTES>::new("?? 01");
+            let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn trailing_wildcard_at_eof() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[data.len() - 1] = 1;
+            let pattern = Pattern::<1, BYTES>::new("01 ??");
+            let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn leading_wildcard_underflow() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[BYTES] = 1;
+            let pattern = Pattern::<1, BYTES>::new("? ? 01");
+            let mut iter = pattern.matches(&data[BYTES - 1..BYTES + BYTES / 10]);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn leading_wildcard_boundary() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[BYTES] = 1;
+            let pattern = Pattern::<1, BYTES>::new("? 01");
+            let mut iter = pattern.matches(&data[BYTES - 1..BYTES + BYTES / 7]);
+            assert_eq!(iter.next().unwrap(), 0);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn pattern_gt_data() {
+            let data = &[1];
+            let pattern = Pattern::<1, BYTES>::new("? 01");
+            let mut iter = pattern.matches(data);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn pattern_lt_alignment() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            let src = &[0u8, 0x05, 0xff, 0xf7, 0x00];
+            unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), data.as_mut_ptr(), src.len()) }
+            let pat = Pattern::<2, BYTES>::new("00");
+            let mut iter = pat.matches(&data[1..src.len()]);
+            assert_eq!(iter.next().unwrap(), 3);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn max_wildcard_prefix() {
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            data[data.len() - 1 - BYTES] = 1;
+            data[data.len() - 1] = 1;
+            let pattern = "? ".repeat(BYTES - 1) + "01";
+            let pattern = Pattern::<1, BYTES>::new(&pattern);
+            let mut iter = pattern.matches(data);
+            assert_eq!(iter.next().unwrap(), 0);
+            assert_eq!(iter.next().unwrap(), data.len() - BYTES);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn alignment_first_possible_eq_data() {
+            let pat = Pattern::<2, BYTES>::new("? ? 01");
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            let mut iter = pat.matches(&data[BYTES - 1..BYTES + 2]);
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn leading_wildcards_match_start_to_end() {
+            let pat = Pattern::<2, BYTES>::new("? ? ? ? 00");
+            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let data =
+                unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
+            let mut iter = pat.matches(&data[10..15]);
+            assert_eq!(iter.next().unwrap(), 0);
+            assert!(iter.next().is_none());
         }
     }
 }

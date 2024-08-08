@@ -1,15 +1,20 @@
 use core::{slice, str::from_utf8};
 
-use patterns::Pattern;
+use patterns::{Pattern, OPTIMAL_BYTES};
 
 /// # Safety
 /// `len` must be a valid length of `pat`. On success, the content of `res` will
 /// not be null. There is no guarantee about the layout of `res` and it should
-/// be considered opaque. The buffer behind `res` must be of size 256 bytes and
-/// needs to be aligned to [`patterns::BYTES`] bytes! By default 64.
-/// `pat` needs to be valid UTF-8.
+/// be considered opaque. The buffer behind `res` must be of size
+/// `4 * `[`patterns::OPTIMAL_BYTES`]` + 16` bytes and needs to be aligned to
+/// [`patterns::OPTIMAL_BYTES`] bytes! By default, 64. `pat` needs to be valid
+/// UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn parse_pattern(pat: *const u8, len: usize, res: *mut Pattern) {
+pub unsafe extern "C" fn parse_pattern(
+    pat: *const u8,
+    len: usize,
+    res: *mut Pattern<1, OPTIMAL_BYTES>,
+) {
     if pat.is_null() || res.is_null() {
         return;
     }

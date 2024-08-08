@@ -48,8 +48,8 @@ impl<'a> SplitAsciiWhitespace<'a> {
         let mut i = 0;
         let mut this = self;
         loop {
-            let (fuu, x) = this.next();
-            this = fuu;
+            let x;
+            (this, x) = this.next();
             match x {
                 Some(_) => i += 1,
                 None => return i,

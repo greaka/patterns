@@ -20,3 +20,10 @@ path = "fuzz_targets/diff.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "huge"
+path = "fuzz_targets/huge.rs"
+test = false
+doc = false
+bench = false

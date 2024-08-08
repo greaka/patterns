@@ -1,4 +1,9 @@
 #!/usr/bin/bash -e
+
+# cargo install rustfilt
+# cargo install cargo-binutils
+# apt install aha
+
 cd "$(dirname "$0")" || exit 1
 PROJROOT="$(cd .. && pwd)"
 cargo fuzz coverage -D diff
