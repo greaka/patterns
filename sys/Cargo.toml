@@ -13,5 +13,25 @@ strip = true
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
 
+[features]
+default = ["bytes_64", "align_1", "align_2", "align_4", "align_8", "align_16", "align_32", "align_64"]
+# decides for which alignment requirements (in bytes) code is generated
+align_1 = []
+align_2 = []
+align_4 = []
+align_8 = []
+align_16 = []
+align_32 = []
+align_64 = []
+# decides which vector width should be used, also defines max pattern length (in bytes)
+# must not be less than alignment requirement
+bytes_1 = [] # allowed alignments: ["align_1"]
+bytes_2 = [] # allowed alignments: ["align_1", "align_2"]
+bytes_4 = [] # allowed alignments: ["align_1", "align_2", "align_4"]
+bytes_8 = [] # allowed alignments: ["align_1", "align_2", "align_4", "align_8"]
+bytes_16 = [] # allowed alignments: ["align_1", "align_2", "align_4", "align_8", "align_16"]
+bytes_32 = [] # allowed alignments: ["align_1", "align_2", "align_4", "align_8", "align_16", "align_32"]
+bytes_64 = [] # allowed alignments: ["align_1", "align_2", "align_4", "align_8", "align_16", "align_32", "align_64"]
+
 [dependencies.patterns]
 path = "../"

@@ -9,6 +9,7 @@ use crate::{BytesMask, Pattern};
 
 /// An [`Iterator`] for searching a given [`Pattern`] in data
 #[must_use]
+#[derive(Clone)]
 pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
@@ -455,7 +456,6 @@ mod tests {
     }
 
     mod regressions {
-
         use super::*;
 
         #[test]

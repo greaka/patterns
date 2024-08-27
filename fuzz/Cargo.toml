@@ -21,9 +21,6 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "huge"
-path = "fuzz_targets/huge.rs"
-test = false
-doc = false
-bench = false
+[[test]]
+name = "test"
+path = "fuzz_targets/test.rs"
