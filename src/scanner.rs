@@ -312,13 +312,15 @@ where
         // of the data slice. a full safe read is required when operating near edges
         let data = unsafe { Self::load::<UNALIGNED, false>(data, len_mask) };
 
-        let mut result = data.simd_eq(pattern.first_bytes).to_bitmask();
+        let mut search = data.simd_eq(pattern.first_bytes);
         if ALIGNMENT > 1 {
-            result = result.bitor(pattern.first_bytes_mask);
+            search = search.bitor(pattern.first_bytes_mask);
         }
+        let mut result = search.to_bitmask();
 
         if UNALIGNED {
-            let mask = Self::mask_min_len(len_mask, pattern.first_bytes_mask);
+            let mask =
+                Self::mask_min_len(len_mask.to_bitmask(), pattern.first_bytes_mask.to_bitmask());
             result &= mask;
         }
 
@@ -365,10 +367,7 @@ where
             let data_len_mask = Self::data_len_mask(len);
             let data = unsafe { Self::load::<SAFE_READ, true>(offset_ptr, data_len_mask) };
 
-            let mut result = data
-                .simd_eq(self.pattern.bytes)
-                .to_bitmask()
-                .bitand(self.pattern.mask);
+            let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
 
             if SAFE_READ {
                 result &= data_len_mask;
@@ -387,16 +386,12 @@ where
     #[inline]
     unsafe fn load<const SAFE_READ: bool, const UNALIGNED: bool>(
         data: *const u8,
-        data_len_mask: BytesMask,
+        data_len_mask: Mask<i8, BYTES>,
     ) -> Simd<u8, BYTES> {
         if SAFE_READ {
             // # Safety
             // data_len_mask ensures that only valid bytes are read
-            Simd::<u8, BYTES>::load_select_ptr(
-                data,
-                Mask::from_bitmask(data_len_mask),
-                Default::default(),
-            )
+            Simd::<u8, BYTES>::load_select_ptr(data, data_len_mask, Default::default())
         } else if UNALIGNED {
             core::ptr::read_unaligned(data as *const _)
         } else {
