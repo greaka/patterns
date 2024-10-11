@@ -2,11 +2,11 @@ use core::{
     marker::PhantomData,
     num::IntErrorKind,
     ops::Not,
-    simd::{LaneCount, Mask, Simd, SupportedLaneCount},
+    simd::{LaneCount, Simd, SupportedLaneCount},
     str::FromStr,
 };
 
-use crate::{const_utils, Scanner, VUNKNOWN as DEFAULT_BYTES};
+use crate::{const_utils, BytesMask, Scanner, VUNKNOWN as DEFAULT_BYTES};
 
 /// A prepared pattern. Allows to search for a given byte sequence in data.
 /// Supports masking and alignment requirements.
@@ -23,11 +23,11 @@ where
     LaneCount<BYTES>: SupportedLaneCount,
 {
     pub(crate) bytes: Simd<u8, BYTES>,
-    pub(crate) mask: Mask<i8, BYTES>,
     pub(crate) first_bytes: Simd<u8, BYTES>,
+    pub(crate) mask: BytesMask,
     /// first bytes mask is inverted
     /// x & mask == mask === x | ^mask == -1
-    pub(crate) first_bytes_mask: Mask<i8, BYTES>,
+    pub(crate) first_bytes_mask: BytesMask,
     pub(crate) first_byte_offset: u8,
     pub(crate) length: u8,
     phantom: PhantomData<[u8; ALIGNMENT]>,
@@ -67,15 +67,13 @@ where
         input[..length].copy_from_slice(bytes);
         let mask = u64::MAX.checked_shr(length as u32).unwrap_or(0).not() & mask;
         let bytes = Simd::<u8, BYTES>::from_array(input);
-        let mask = Mask::<i8, BYTES>::from_bitmask(mask.reverse_bits());
-        let mask_array = mask.to_int();
-        let mask_array = mask_array.as_array().as_slice();
+        let mask = mask.reverse_bits();
 
-        let first_byte_offset = find_first_byte_offset::<ALIGNMENT>(mask_array).unwrap();
+        let first_byte_offset = Self::find_first_byte_offset(mask).unwrap();
 
         let (first_bytes, first_bytes_mask) = fill_first_bytes::<ALIGNMENT, BYTES>(
             &input[first_byte_offset..],
-            &mask_array[first_byte_offset..],
+            mask >> first_byte_offset,
         );
 
         Self {
@@ -99,7 +97,7 @@ where
 
         let (buffer, mask) = {
             let mut buffer = [0_u8; BYTES];
-            let mut mask = [0_i8; BYTES];
+            let mut mask = 0;
             let mut index = 0;
             let mut bytes = bytes;
 
@@ -117,7 +115,7 @@ where
                         Err(e) => return Err(ParsePatternError::InvalidHexNumber(e)),
                     };
                     buffer[index] = parsed;
-                    mask[index] = -1;
+                    mask |= 1 << index;
                 }
 
                 index += 1;
@@ -126,20 +124,15 @@ where
             (buffer, mask)
         };
 
-        let first_byte_offset = match find_first_byte_offset::<ALIGNMENT>(&mask) {
+        let first_byte_offset = match Self::find_first_byte_offset(mask) {
             Ok(offset) => offset,
             Err(e) => return Err(e),
         };
 
         let (_, chunk) = buffer.split_at(first_byte_offset);
-        let (_, mask_chunk) = mask.split_at(first_byte_offset);
+        let mask_chunk = mask >> first_byte_offset;
         let (first_bytes, first_bytes_mask) =
             fill_first_bytes::<ALIGNMENT, BYTES>(chunk, mask_chunk);
-
-        // There is no const way to create a Mask
-        // # Safety: Mask is defined as repr transparent over Simd<T>
-        let mask = Simd::from_array(mask);
-        let mask = unsafe { *(&mask as *const _ as *const _) };
 
         Ok(Self {
             bytes: Simd::<u8, BYTES>::from_array(buffer),
@@ -160,54 +153,51 @@ where
     ) -> Scanner<'pattern, 'data, ALIGNMENT, BYTES> {
         Scanner::new(self, data)
     }
-}
 
-const fn find_first_byte_offset<const ALIGNMENT: usize>(
-    mut mask: &[i8],
-) -> Result<usize, ParsePatternError> {
-    let mut i = 0;
-    let mut smallest = 0;
-    let mut highest_count = 0;
-    loop {
-        if mask.len() < ALIGNMENT {
-            break;
+    const fn find_first_byte_offset(mut mask: BytesMask) -> Result<usize, ParsePatternError> {
+        let align_mask = Scanner::<ALIGNMENT, BYTES>::data_len_mask(ALIGNMENT);
+        let mut i = 0;
+        let mut smallest = 0;
+        let mut highest_count = 0;
+        loop {
+            if mask == 0 {
+                break;
+            }
+            let chunk = mask & align_mask;
+            mask = if let Some(mask) = mask.checked_shr(ALIGNMENT as u32) {
+                mask
+            } else {
+                0
+            };
+
+            let chunk_count = chunk.count_ones();
+
+            if chunk_count > highest_count {
+                highest_count = chunk_count;
+                smallest = i;
+            }
+
+            i += 1;
         }
-        let chunk;
-        (chunk, mask) = mask.split_at(ALIGNMENT);
 
-        let mut j = 0;
-        let mut count = 0;
-        while j < chunk.len() {
-            count += (chunk[j] != 0) as usize;
-            j += 1;
+        if highest_count == 0 {
+            Err(ParsePatternError::MissingNonWildcardByte)
+        } else {
+            Ok(smallest * ALIGNMENT)
         }
-
-        let chunk_count = count;
-        if chunk_count > highest_count {
-            highest_count = chunk_count;
-            smallest = i;
-        }
-
-        i += 1;
-    }
-
-    if highest_count == 0 {
-        Err(ParsePatternError::MissingNonWildcardByte)
-    } else {
-        Ok(smallest * ALIGNMENT)
     }
 }
 
 const fn fill_first_bytes<const ALIGNMENT: usize, const BYTES: usize>(
     chunk: &[u8],
-    mask: &[i8],
-) -> (Simd<u8, BYTES>, Mask<i8, BYTES>)
+    mask: BytesMask,
+) -> (Simd<u8, BYTES>, BytesMask)
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
     LaneCount<BYTES>: SupportedLaneCount,
 {
     let mut first = [0u8; BYTES];
-    let mut first_mask = [0i8; BYTES];
+    let mut first_mask = 0;
 
     let mut i = 0;
 
@@ -215,19 +205,15 @@ where
         let mut j = 0;
         while j < ALIGNMENT {
             first[i * ALIGNMENT + j] = chunk[j];
-            first_mask[i * ALIGNMENT + j] = !mask[j];
+            first_mask |= ((((mask >> j) as i8 & 1) == 0) as BytesMask) << (i * ALIGNMENT + j);
             j += 1;
         }
         i += 1;
     }
 
     let bytes = Simd::from_array(first);
-    // There is no const way to create a Mask
-    // # Safety: Mask is defined as repr transparent over Simd<T>
-    let mask = Simd::from_array(first_mask);
-    let mask = unsafe { *(&mask as *const _ as *const _) };
 
-    (bytes, mask)
+    (bytes, first_mask)
 }
 
 impl FromStr for Pattern {
