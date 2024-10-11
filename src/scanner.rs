@@ -7,6 +7,17 @@ use core::{
 
 use crate::{BytesMask, Pattern};
 
+/// exactly like `debug_assert!` but also adds an unreachable_unchecked branch
+/// in release mode
+macro_rules! debug_assert_opt {
+    ($cond:expr) => {
+        debug_assert!($cond);
+        if !($cond) {
+            unsafe { ::core::hint::unreachable_unchecked() };
+        }
+    };
+}
+
 /// An [`Iterator`] for searching a given [`Pattern`] in data
 #[must_use]
 #[derive(Clone)]
@@ -56,9 +67,11 @@ where
     /// efficient while still providing a correct algorithm.
     pub fn new(pattern: &'pattern Pattern<ALIGNMENT, BYTES>, data: &'data [u8]) -> Self {
         let _aligned = Self::_ALIGNED;
-        debug_assert!(data.len() <= usize::MAX - BYTES);
-        debug_assert!(!data.is_empty());
-        debug_assert!(((&data[data.len() - 1]) as *const u8 as usize) <= usize::MAX - 3 * BYTES);
+        debug_assert_opt!(data.len() <= usize::MAX - BYTES);
+        debug_assert_opt!(!data.is_empty());
+        debug_assert_opt!(
+            ((&data[data.len() - 1]) as *const u8 as usize) <= usize::MAX - 3 * BYTES
+        );
 
         // data + align_offset required to align to BYTES
         let align_offset = Self::first_offset(data.as_ptr(), pattern.first_byte_offset);
@@ -156,7 +169,7 @@ where
         // if first_possible == max_offset {
         //     return 0;
         // }
-        debug_assert!(first_possible < max_offset);
+        debug_assert_opt!(first_possible < max_offset);
 
         // compute the first candidates
         let result = unsafe {
@@ -176,7 +189,7 @@ where
         // # Safety
         // self.end and self.position are both initialized from self.data
         let remaining_length = unsafe { self.end.offset_from(self.position) };
-        debug_assert!(remaining_length >= 0);
+        debug_assert_opt!(remaining_length >= 0);
         let remaining_length = remaining_length as usize;
 
         self.candidates_mask = unsafe {
@@ -214,7 +227,12 @@ where
 
         loop {
             if let Some(position) = unsafe { self.consume_candidates::<false>() } {
-                return Some(position);
+                #[cold]
+                fn ret(pos: usize) -> Option<usize> {
+                    Some(pos)
+                }
+
+                return ret(position);
             }
 
             // candidates are 0, check next chunk
@@ -230,11 +248,27 @@ where
             self.position = self.position.wrapping_add(BYTES);
             // check if the next 2 chunks are fully within bounds
             if self.position.wrapping_add(2 * BYTES) >= self.end {
-                self.exhausted = true;
-                self.candidates_mask =
-                    unsafe { Self::build_candidates::<false>(self.position, BYTES, self.pattern) };
+                #[cold]
+                fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
+                    scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
+                ) -> Option<usize>
+                where
+                    LaneCount<ALIGNMENT>: SupportedLaneCount,
+                    LaneCount<BYTES>: SupportedLaneCount,
+                {
+                    scanner.exhausted = true;
+                    scanner.candidates_mask = unsafe {
+                        Scanner::<'pattern, 'data, ALIGNMENT, BYTES>::build_candidates::<false>(
+                            scanner.position,
+                            BYTES,
+                            scanner.pattern,
+                        )
+                    };
 
-                return self.end_search();
+                    scanner.end_search()
+                }
+
+                return branch(self);
             }
 
             // # Safety
@@ -278,10 +312,11 @@ where
         // of the data slice. a full safe read is required when operating near edges
         let data = unsafe { Self::load::<UNALIGNED, false>(data, len_mask) };
 
-        let mut result = data
-            .simd_eq(pattern.first_bytes)
-            .bitor(pattern.first_bytes_mask)
-            .to_bitmask();
+        let mut search = data.simd_eq(pattern.first_bytes);
+        if ALIGNMENT > 1 {
+            search = search.bitor(pattern.first_bytes_mask);
+        }
+        let mut result = search.to_bitmask();
 
         if UNALIGNED {
             let mask =
@@ -322,7 +357,7 @@ where
             let position = unsafe { offset_ptr.offset_from(self.data.as_ptr()) };
             // initial_candidates includes a bounds check at candidates creation
             // subsequent candidate creations cannot underflow
-            debug_assert!(position >= 0);
+            debug_assert_opt!(position >= 0);
             let position = position as usize;
 
             let len = self.data.len() - position;
