@@ -97,7 +97,7 @@ where
             data,
             end,
             position,
-            candidates_mask,
+            candidates_mask: candidates_mask.to_bitmask(),
             exhausted: position.wrapping_add(2 * BYTES) >= end,
         }
     }
@@ -120,7 +120,7 @@ where
         pattern: &Pattern<ALIGNMENT, BYTES>,
         data: &[u8],
         align_offset: usize,
-    ) -> BytesMask {
+    ) -> Mask<i8, BYTES> {
         // The general idea is to eliminate extra branches inside the hot loop.
         // For that, the potentially unaligned start of the dataset needs to get
         // prepared to behave exactly like the hot loop.
@@ -152,7 +152,7 @@ where
 
         // if the data is shorter than the pattern, there will never be a match
         if data.len().saturating_sub(data_align) < pattern.length as usize {
-            return 0;
+            return Default::default();
         }
 
         let first_possible = data_align + pattern.first_byte_offset as usize;
@@ -182,7 +182,12 @@ where
 
         // shift result to align to end of currently aligned (out of bounds starting)
         // slice
-        result << (BYTES + first_possible - align_offset)
+        let pre_res = crate::transmute_yolo!(result, _, Simd<u8, BYTES>);
+        let result = pre_res.swizzle_dyn(shift_idx::<BYTES>(
+            (BYTES + first_possible - align_offset) as u8,
+        ));
+
+        crate::transmute_yolo!(result)
     }
 
     fn end_candidates(&mut self) {
@@ -316,15 +321,14 @@ where
         if ALIGNMENT > 1 {
             search = search.bitor(pattern.first_bytes_mask);
         }
-        let mut result = search.to_bitmask();
+        let mut result = search;
 
         if UNALIGNED {
-            let mask =
-                Self::mask_min_len(len_mask.to_bitmask(), pattern.first_bytes_mask.to_bitmask());
+            let mask = Self::mask_min_len(len_mask, pattern.first_bytes_mask);
             result &= mask;
         }
 
-        Self::reduce_bitmask(result)
+        Self::reduce_bitmask(result).to_bitmask()
     }
 
     /// This function guarantees:
@@ -400,6 +404,19 @@ where
     }
 }
 
+const fn shift_idx<const N: usize>(amount: u8) -> Simd<u8, N>
+where
+    LaneCount<N>: SupportedLaneCount,
+{
+    let mut idx = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        idx[i] = i as u8 + amount;
+        i += 1;
+    }
+    Simd::from_array(idx)
+}
+
 #[cfg(test)]
 mod tests {
     use core::slice;
@@ -427,7 +444,7 @@ mod tests {
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset % BYTES, BYTES - 3);
-            let result = Scanner::initial_candidates(&pattern, data, offset);
+            let result = Scanner::initial_candidates(&pattern, data, offset).to_bitmask();
 
             let control: BytesMask =
                 0b1000_0000_0010_0000_0100_0100_0000_1000_0001_0001_0000_0100_0000_1000_1000_0000;
@@ -445,7 +462,7 @@ mod tests {
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset % BYTES, BYTES - 3);
-            let result = Scanner::initial_candidates(&pattern, data, offset);
+            let result = Scanner::initial_candidates(&pattern, data, offset).to_bitmask();
 
             let control: BytesMask =
                 0b0100_0000_0001_0000_0000_0000_0000_0100_0000_0000_0000_0000_0000_0100_0100_0000;
@@ -463,7 +480,7 @@ mod tests {
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset % BYTES, BYTES - 3);
-            let result = Scanner::initial_candidates(&pattern, data, offset);
+            let result = Scanner::initial_candidates(&pattern, data, offset).to_bitmask();
 
             let control: BytesMask =
                 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0001_0000_0000;
@@ -481,7 +498,7 @@ mod tests {
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
             assert_eq!(offset % BYTES, BYTES - 3);
-            let result = Scanner::initial_candidates(&pattern, data, offset);
+            let result = Scanner::initial_candidates(&pattern, data, offset).to_bitmask();
 
             let control: BytesMask = 0;
             let control = control >> ((offset / BYTES) * BYTES) & (u64::MAX >> (64 - BYTES));

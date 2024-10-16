@@ -1,6 +1,9 @@
-use core::simd::{cmp::SimdPartialOrd, LaneCount, Mask, Simd, SupportedLaneCount};
+use core::simd::{
+    cmp::{SimdPartialEq, SimdPartialOrd},
+    LaneCount, Mask, Simd, SupportedLaneCount, Swizzle,
+};
 
-use crate::{BytesMask, Scanner};
+use crate::{transmute_yolo, Scanner};
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
@@ -35,23 +38,15 @@ where
     /// len   1111_1000_0000
     /// res   1111_1000_0000
     /// ```
-    pub(crate) const fn mask_min_len(len: BytesMask, pattern_mask: BytesMask) -> BytesMask {
+    pub(crate) fn mask_min_len(
+        len: Mask<i8, BYTES>,
+        pattern_mask: Mask<i8, BYTES>,
+    ) -> Mask<i8, BYTES> {
         let groups = Self::reduce_bitmask(pattern_mask | len);
         // 1000_1000_0000
         let spread = Self::extend_bitmask(groups);
         // 1111_1111_0000
         spread | len
-    }
-
-    pub(crate) const fn chunk_mask() -> BytesMask {
-        let pattern = 1;
-        let mut mask = 0;
-        let mut i = 0;
-        while i < BYTES / ALIGNMENT {
-            mask |= pattern << (ALIGNMENT * i);
-            i += 1;
-        }
-        mask
     }
 
     /// filters the bitmask to valid chunks, little endian least-significant bit
@@ -63,14 +58,19 @@ where
     /// result: 0001 0000 0000 0001
     /// ```
     #[inline]
-    pub(crate) const fn reduce_bitmask(mut bitmask: BytesMask) -> BytesMask {
-        let mut shift = 1;
-        while shift < ALIGNMENT {
-            bitmask &= bitmask >> shift;
-            shift <<= 1;
+    pub(crate) fn reduce_bitmask(bitmask: Mask<i8, BYTES>) -> Mask<i8, BYTES> {
+        match ALIGNMENT {
+            1 => bitmask,
+            2 => match BYTES {
+                64 => {
+                    let bitmask: Simd<i16, 32> = transmute_yolo!(bitmask);
+                    let eq = bitmask.simd_eq(Simd::splat(-1));
+                    transmute_yolo!(eq)
+                }
+                _ => unimplemented!(),
+            },
+            _ => unimplemented!(),
         }
-
-        bitmask & Self::chunk_mask()
     }
 
     /// extends the bitmask to entire chunks, little endian least-significant
@@ -82,30 +82,48 @@ where
     /// result: 1111 0000 0000 1111
     /// ```
     #[inline]
-    pub(crate) const fn extend_bitmask(mut bitmask: BytesMask) -> BytesMask {
-        bitmask &= Self::chunk_mask();
-
-        let mut shift = 1;
-        while shift < ALIGNMENT {
-            bitmask |= bitmask << shift;
-            shift <<= 1;
+    pub(crate) fn extend_bitmask(bitmask: Mask<i8, BYTES>) -> Mask<i8, BYTES> {
+        unsafe {
+            *(&<Splatter<ALIGNMENT> as Swizzle<BYTES>>::swizzle(
+                *(&bitmask as *const Mask<i8, BYTES> as *const Simd<i8, BYTES>),
+            ) as *const _ as *const _)
         }
-
-        bitmask
     }
+}
+
+struct Splatter<const WIDTH: usize>;
+impl<const N: usize, const WIDTH: usize> Swizzle<N> for Splatter<WIDTH> {
+    const INDEX: [usize; N] = const {
+        let mut index = [0; N];
+        let mut i = 0;
+        while i < N / WIDTH {
+            let mut j = 0;
+            while j < WIDTH {
+                index[i * WIDTH + j] = i * WIDTH;
+                j += 1;
+            }
+            i += 1;
+        }
+        index
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BytesMask;
 
     const MASK: BytesMask =
         0b1111_1110_1101_1011_0111_1100_1010_1001_0101_0011_0110_1000_0100_0010_0001_0000;
     const BYTES: usize = 64;
 
+    fn mask() -> Mask<i8, BYTES> {
+        Mask::from_bitmask(MASK)
+    }
+
     #[test]
     fn reduce_align_1() {
-        let reduced = Scanner::<'_, '_, 1, BYTES>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 1, BYTES>::reduce_bitmask(mask()).to_bitmask();
         let control = MASK;
         let control = control & (u64::MAX >> (64 - BYTES));
 
@@ -114,7 +132,7 @@ mod tests {
 
     #[test]
     fn reduce_align_2() {
-        let reduced = Scanner::<'_, '_, 2, BYTES>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 2, BYTES>::reduce_bitmask(mask()).to_bitmask();
         let control =
             0b0101_0100_0100_0001_0001_0100_0000_0000_0000_0001_0000_0000_0000_0000_0000_0000;
         let control = control & (u64::MAX >> (64 - BYTES));
@@ -124,7 +142,7 @@ mod tests {
 
     #[test]
     fn reduce_align_4() {
-        let reduced = Scanner::<'_, '_, 4, BYTES>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 4, BYTES>::reduce_bitmask(mask()).to_bitmask();
         let control = 1 << 60;
         let control = control & (u64::MAX >> (64 - BYTES));
 
@@ -133,7 +151,7 @@ mod tests {
 
     #[test]
     fn reduce_align_8() {
-        let reduced = Scanner::<'_, '_, 8, BYTES>::reduce_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 8, BYTES>::reduce_bitmask(mask()).to_bitmask();
         let control = 0;
         let control = control & (u64::MAX >> (64 - BYTES));
 
@@ -142,7 +160,7 @@ mod tests {
 
     #[test]
     fn extend_align_1() {
-        let reduced = Scanner::<'_, '_, 1, BYTES>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 1, BYTES>::extend_bitmask(mask()).to_bitmask();
         let control = MASK;
         let control = control & (u64::MAX >> (64 - BYTES));
 
@@ -151,7 +169,7 @@ mod tests {
 
     #[test]
     fn extend_align_2() {
-        let reduced = Scanner::<'_, '_, 2, BYTES>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 2, BYTES>::extend_bitmask(mask()).to_bitmask();
         let control =
             0b1111_1100_1111_0011_1111_1100_0000_0011_1111_0011_1100_0000_1100_0000_0011_0000;
         let control = control & (u64::MAX >> (64 - BYTES));
@@ -161,7 +179,7 @@ mod tests {
 
     #[test]
     fn extend_align_4() {
-        let reduced = Scanner::<'_, '_, 4, BYTES>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 4, BYTES>::extend_bitmask(mask()).to_bitmask();
         let control =
             0b1111_0000_1111_1111_1111_0000_0000_1111_1111_1111_0000_0000_0000_0000_1111_0000;
         let control = control & (u64::MAX >> (64 - BYTES));
@@ -171,7 +189,7 @@ mod tests {
 
     #[test]
     fn extend_align_8() {
-        let reduced = Scanner::<'_, '_, 8, BYTES>::extend_bitmask(MASK);
+        let reduced = Scanner::<'_, '_, 8, BYTES>::extend_bitmask(mask()).to_bitmask();
         let control =
             0b0000_0000_1111_1111_0000_0000_1111_1111_1111_1111_0000_0000_0000_0000_0000_0000;
         let control = control & (u64::MAX >> (64 - BYTES));

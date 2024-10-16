@@ -35,6 +35,22 @@
 
 pub use crate::{pattern::Pattern, scanner::Scanner};
 
+macro_rules! transmute_yolo {
+    ($x:expr) => {
+        unsafe { *(&($x) as *const _ as *const _) }
+    };
+    ($x:expr, $src:ty, $dst:ty) => {
+        unsafe { *(&($x) as *const $src as *const $dst) }
+    };
+    ($x:expr,_, $dst:ty) => {
+        unsafe { *(&($x) as *const _ as *const $dst) }
+    };
+    ($x:expr, $src:ty,_) => {
+        unsafe { *(&($x) as *const $src as *const _) }
+    };
+}
+pub(crate) use transmute_yolo;
+
 mod const_utils;
 mod masks;
 mod pattern;
