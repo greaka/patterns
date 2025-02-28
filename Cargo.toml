@@ -11,5 +11,10 @@ license = "MIT/Apache-2.0"
 name = "main"
 harness = false
 
+[profile.bench]
+debug = true
+
 [dev-dependencies]
-criterion = "0.4.0"
+aligned-vec = "0.6.1"
+criterion = "0.5.1"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
