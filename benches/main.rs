@@ -64,11 +64,15 @@ fn xxh_benchmark(c: &mut Criterion) {
     let tail_1: Pattern<ALIGN, BYTES> = Pattern::new(r#"e2 f4 b7 0f eb 75 06 cf e0 54 92 0e e9 20 cb cc 89 39 e7 a9 1f 8e 0a 39 0d 71 d4 68"#);
     let tail_2: Pattern<ALIGN, BYTES> = Pattern::new(r#"e2 ?? ?? 0f eb ?? ?? ?? e0 54 92 0e e9 20 ?? ?? 89 39 e7 a9 1f 8e ?? 39 0d 71 d4 68"#);
 
-    c.bench_function("xxh_mid", |b| avx(b, &mid_1, &data));
-    c.bench_function("xxh_mid_wildcard", |b| avx(b, &mid_2, &data));
-    c.bench_function("xxh_late", |b| avx(b, &late_1, &data));
-    c.bench_function("xxh_tail", |b| avx(b, &tail_1, &data));
-    c.bench_function("xxh_tail_wildcard", |b| avx(b, &tail_2, &data));
+    if ALIGN <= 32 {
+        c.bench_function("xxh_mid", |b| avx(b, &mid_1, &data));
+        c.bench_function("xxh_mid_wildcard", |b| avx(b, &mid_2, &data));
+    }
+    if ALIGN <= 2 {
+        c.bench_function("xxh_late", |b| avx(b, &late_1, &data));
+        c.bench_function("xxh_tail", |b| avx(b, &tail_1, &data));
+        c.bench_function("xxh_tail_wildcard", |b| avx(b, &tail_2, &data));
+    }
 }
 
 fn trivial_benchmark(c: &mut Criterion) {
