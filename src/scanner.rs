@@ -34,7 +34,7 @@ where
     candidates_mask: BytesMask,
     /// pointer to first valid byte of data
     data: &'data [u8],
-    /// pointer to one byte past the end of data
+    /// pointer to one byte past the end of data `- 2 * BYTES`
     end: usize,
     /// iterator position
     position: usize,
@@ -72,6 +72,7 @@ where
         debug_assert_opt!(
             ((&data[data.len() - 1]) as *const u8 as usize) <= usize::MAX - 3 * BYTES
         );
+        debug_assert_opt!(data.as_ptr().addr() + data.len() >= 2 * BYTES);
 
         // data + align_offset required to align to BYTES
         let align_offset = Self::first_offset(data.as_ptr(), pattern.first_byte_offset);
@@ -87,7 +88,7 @@ where
         // it is assumed that data.as_ptr() - BYTES doesn't underflow
         let data_addr = data.as_ptr().addr();
         let position = data_addr + align_offset - BYTES;
-        let end = data_addr + data.len();
+        let end = data_addr + data.len() - 2 * BYTES;
 
         Self {
             pattern,
@@ -95,7 +96,7 @@ where
             end,
             position,
             candidates_mask,
-            exhausted: position + 2 * BYTES >= end,
+            exhausted: position >= end,
         }
     }
 
@@ -183,10 +184,10 @@ where
     }
 
     fn end_candidates(&mut self) {
-        debug_assert_opt!(self.end >= self.position);
+        debug_assert_opt!(self.end + 2 * BYTES >= self.position);
         // # Safety
         // self.end and self.position are both initialized from self.data
-        let remaining_length = self.end - self.position;
+        let remaining_length = self.end + 2 * BYTES - self.position;
 
         self.candidates_mask = unsafe {
             Self::build_candidates::<true>(
@@ -201,7 +202,7 @@ where
         if let Some(position) = unsafe { self.consume_candidates::<true>() } {
             return Some(position);
         }
-        if self.position + BYTES < self.end {
+        if self.position < self.end + BYTES {
             self.position += BYTES;
             self.end_candidates();
         }
@@ -247,7 +248,7 @@ where
             // violate FusedIterator guarantees
             self.position += BYTES;
             // check if the next 2 chunks are fully within bounds
-            if self.position + 2 * BYTES >= self.end {
+            if self.position >= self.end {
                 #[cold]
                 fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
                     scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
