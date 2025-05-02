@@ -1,26 +1,33 @@
-use core::simd::{cmp::SimdPartialOrd, LaneCount, Mask, Simd, SupportedLaneCount};
-
 use crate::{BytesMask, Scanner};
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// generates a mask that yields true until position `len`
     #[inline]
-    pub(crate) fn data_len_mask(len: usize) -> Mask<i8, BYTES> {
+    pub(crate) fn data_len_mask(len: usize) -> [i8; BYTES] {
         let len = len.min(BYTES);
 
-        let mut index = [0u8; BYTES];
+        let mut index = [0i8; BYTES];
         index
             .iter_mut()
             .enumerate()
-            .for_each(|(index, entry)| *entry = index as u8);
-        let index = Simd::<u8, BYTES>::from_array(index);
+            .for_each(|(index, entry)| *entry = if index < len { -1 } else { 0 });
 
-        index.simd_lt(Simd::<u8, BYTES>::splat(len as u8))
+        index
+    }
+
+    pub(crate) const fn bitmask(len: [i8; BYTES]) -> u64 {
+        let mut index = 0u64;
+        let mut i = 0;
+        while i < BYTES {
+            if len[i] != 0 {
+                index |= 1 << i;
+            }
+            i += 1;
+        }
+
+        index
     }
 
     /// Extends a length mask to ALIGNMENT if the given pattern mask fills the

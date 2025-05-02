@@ -28,7 +28,6 @@
 // optimize pattern.len() <= alignment
 // explore getting rid of pattern.length
 
-#![feature(portable_simd)]
 #![no_std]
 // untested on big endian
 #![cfg(target_endian = "little")]

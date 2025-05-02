@@ -1,10 +1,4 @@
-use core::{
-    marker::PhantomData,
-    num::IntErrorKind,
-    ops::Not,
-    simd::{LaneCount, Mask, Simd, SupportedLaneCount},
-    str::FromStr,
-};
+use core::{marker::PhantomData, num::IntErrorKind, ops::Not, str::FromStr};
 
 use crate::{const_utils, Scanner, VUNKNOWN as DEFAULT_BYTES};
 
@@ -17,27 +11,19 @@ use crate::{const_utils, Scanner, VUNKNOWN as DEFAULT_BYTES};
 /// inner loops for that.
 /// It is also the max length for patterns.
 #[derive(Clone, Debug)]
-pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = DEFAULT_BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
-    pub(crate) bytes: Simd<u8, BYTES>,
-    pub(crate) mask: Mask<i8, BYTES>,
-    pub(crate) first_bytes: Simd<u8, BYTES>,
+pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = DEFAULT_BYTES> {
+    pub(crate) bytes: [u8; BYTES],
+    pub(crate) mask: [i8; BYTES],
+    pub(crate) first_bytes: [u8; BYTES],
     /// first bytes mask is inverted
     /// x & mask == mask === x | ^mask == -1
-    pub(crate) first_bytes_mask: Mask<i8, BYTES>,
+    pub(crate) first_bytes_mask: [i8; BYTES],
     pub(crate) first_byte_offset: u8,
     pub(crate) length: u8,
     phantom: PhantomData<[u8; ALIGNMENT]>,
 }
 
-impl<const ALIGNMENT: usize, const BYTES: usize> Pattern<ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+impl<const ALIGNMENT: usize, const BYTES: usize> Pattern<ALIGNMENT, BYTES> {
     /// Parse a pattern. Use the [`FromStr`] impl to return an error instead of
     /// panicking.
     ///
@@ -66,16 +52,19 @@ where
         let length = bytes.len().min(BYTES);
         input[..length].copy_from_slice(bytes);
         let mask = u64::MAX.checked_shr(length as u32).unwrap_or(0).not() & mask;
-        let bytes = Simd::<u8, BYTES>::from_array(input);
-        let mask = Mask::<i8, BYTES>::from_bitmask(mask.reverse_bits());
-        let mask_array = mask.to_int();
-        let mask_array = mask_array.as_array().as_slice();
+        let bytes = input;
+        let mask = mask.reverse_bits();
+        let mut mask_array = [0i8; BYTES];
+        for (i, item) in mask_array.iter_mut().enumerate().take(BYTES) {
+            *item = if mask & (1 << i) != 0 { -1 } else { 0 };
+        }
+        let mask = mask_array;
 
-        let first_byte_offset = find_first_byte_offset::<ALIGNMENT>(mask_array).unwrap();
+        let first_byte_offset = find_first_byte_offset::<ALIGNMENT>(&mask).unwrap();
 
         let (first_bytes, first_bytes_mask) = fill_first_bytes::<ALIGNMENT, BYTES>(
             &input[first_byte_offset..],
-            &mask_array[first_byte_offset..],
+            &mask[first_byte_offset..],
         );
 
         Self {
@@ -136,13 +125,8 @@ where
         let (first_bytes, first_bytes_mask) =
             fill_first_bytes::<ALIGNMENT, BYTES>(chunk, mask_chunk);
 
-        // There is no const way to create a Mask
-        // # Safety: Mask is defined as repr transparent over Simd<T>
-        let mask = Simd::from_array(mask);
-        let mask = unsafe { *(&mask as *const _ as *const _) };
-
         Ok(Self {
-            bytes: Simd::<u8, BYTES>::from_array(buffer),
+            bytes: buffer,
             mask,
             first_bytes,
             first_bytes_mask,
@@ -201,11 +185,7 @@ const fn find_first_byte_offset<const ALIGNMENT: usize>(
 const fn fill_first_bytes<const ALIGNMENT: usize, const BYTES: usize>(
     chunk: &[u8],
     mask: &[i8],
-) -> (Simd<u8, BYTES>, Mask<i8, BYTES>)
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+) -> ([u8; BYTES], [i8; BYTES]) {
     let mut first = [0u8; BYTES];
     let mut first_mask = [0i8; BYTES];
 
@@ -221,10 +201,10 @@ where
         i += 1;
     }
 
-    let bytes = Simd::from_array(first);
+    let bytes = first;
     // There is no const way to create a Mask
     // # Safety: Mask is defined as repr transparent over Simd<T>
-    let mask = Simd::from_array(first_mask);
+    let mask = first_mask;
     let mask = unsafe { *(&mask as *const _ as *const _) };
 
     (bytes, mask)

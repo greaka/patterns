@@ -13,8 +13,7 @@ pub(crate) fn xxh3_data(length: usize) -> AVec<u8> {
 pub(crate) fn with_misaligned<F: FnOnce(&[u8]) -> T, T>(data: &[u8], offset: usize, f: F) -> T {
     let vec = aligned_vec::AVec::<u8>::from_iter(
         64,
-        core::iter::repeat(&0_u8)
-            .take(offset)
+        std::iter::repeat_n(&0_u8, offset)
             .chain(data.iter())
             .copied(),
     );

@@ -1,9 +1,4 @@
-use core::{
-    cmp::min,
-    iter::FusedIterator,
-    ops::{BitAnd, BitOr},
-    simd::{cmp::SimdPartialEq, LaneCount, Mask, Simd, SupportedLaneCount},
-};
+use core::{cmp::min, iter::FusedIterator};
 
 use crate::{BytesMask, Pattern};
 
@@ -21,11 +16,7 @@ macro_rules! debug_assert_opt {
 /// An [`Iterator`] for searching a given [`Pattern`] in data
 #[must_use]
 #[derive(Clone)]
-pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> {
     /// needle
     pattern: &'pattern Pattern<ALIGNMENT, BYTES>,
     /// one bit for each byte in [`BYTES`]
@@ -44,14 +35,11 @@ where
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     const _ALIGNED: bool = Self::validate_alignment();
 
     const fn validate_alignment() -> bool {
-        if ALIGNMENT > BYTES {
+        if ALIGNMENT > BYTES || BYTES % ALIGNMENT != 0 {
             panic!("Pattern ALIGNMENT must be less or equal to BYTES");
         }
         true
@@ -101,7 +89,7 @@ where
     }
 
     fn first_offset(data: *const u8, first_byte_offset: u8) -> usize {
-        let mut align_offset = data.align_offset(align_of::<Simd<u8, BYTES>>());
+        let mut align_offset = data.align_offset(BYTES);
         if align_offset == 0 {
             align_offset = BYTES;
         }
@@ -213,9 +201,6 @@ where
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> Iterator
     for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     type Item = usize;
 
@@ -252,11 +237,7 @@ where
                 #[cold]
                 fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
                     scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
-                ) -> Option<usize>
-                where
-                    LaneCount<ALIGNMENT>: SupportedLaneCount,
-                    LaneCount<BYTES>: SupportedLaneCount,
-                {
+                ) -> Option<usize> {
                     scanner.exhausted = true;
                     scanner.candidates_mask = unsafe {
                         Scanner::<'pattern, 'data, ALIGNMENT, BYTES>::build_candidates::<false>(
@@ -289,17 +270,11 @@ where
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> FusedIterator
     for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
 }
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// if `UNALIGNED == false`, then the data pointer must be aligned to
     /// [`BYTES`] and `data + BYTES <= self.end`
@@ -318,15 +293,17 @@ where
         // of the data slice. a full safe read is required when operating near edges
         let data = unsafe { Self::load::<UNALIGNED, false>(data, len_mask) };
 
-        let mut search = data.simd_eq(pattern.first_bytes);
+        let mut search = Self::simd_eq(data, pattern.first_bytes);
         if ALIGNMENT > 1 {
-            search = search.bitor(pattern.first_bytes_mask);
+            search = Self::bitor(search, pattern.first_bytes_mask);
         }
-        let mut result = search.to_bitmask();
+        let mut result = Self::bitmask(search);
 
         if UNALIGNED {
-            let mask =
-                Self::mask_min_len(len_mask.to_bitmask(), pattern.first_bytes_mask.to_bitmask());
+            let mask = Self::mask_min_len(
+                Self::bitmask(len_mask),
+                Self::bitmask(pattern.first_bytes_mask),
+            );
             result &= mask;
         }
 
@@ -374,10 +351,11 @@ where
                 )
             };
 
-            let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
+            let result = Self::simd_eq(data, self.pattern.bytes);
+            let mut result = Self::bitand(result, self.pattern.mask);
 
             if SAFE_READ {
-                result &= data_len_mask;
+                result = Self::bitand(result, data_len_mask);
             }
 
             if result == self.pattern.mask {
@@ -393,17 +371,63 @@ where
     #[inline]
     unsafe fn load<const SAFE_READ: bool, const UNALIGNED: bool>(
         data: *const u8,
-        data_len_mask: Mask<i8, BYTES>,
-    ) -> Simd<u8, BYTES> {
+        data_len_mask: [i8; BYTES],
+    ) -> [u8; BYTES] {
         if SAFE_READ {
             // # Safety
             // data_len_mask ensures that only valid bytes are read
-            Simd::<u8, BYTES>::load_select_ptr(data, data_len_mask, Default::default())
+            Self::load_select_ptr(data, data_len_mask)
         } else if UNALIGNED {
             core::ptr::read_unaligned(data as *const _)
         } else {
             *(data as *const _)
         }
+    }
+
+    #[inline]
+    fn simd_eq<T: PartialEq>(a: [T; BYTES], b: [T; BYTES]) -> [i8; BYTES] {
+        let mut c = [0; BYTES];
+
+        for i in 0..BYTES {
+            c[i] = if a[i] == b[i] { -1 } else { 0 };
+        }
+
+        c
+    }
+
+    #[inline]
+    fn bitor(a: [i8; BYTES], b: [i8; BYTES]) -> [i8; BYTES] {
+        let mut c = [0; BYTES];
+
+        for i in 0..BYTES {
+            c[i] = if a[i] != 0 || b[i] != 0 { -1 } else { 0 };
+        }
+
+        c
+    }
+
+    #[inline]
+    fn bitand(a: [i8; BYTES], b: [i8; BYTES]) -> [i8; BYTES] {
+        let mut c = [0; BYTES];
+
+        for i in 0..BYTES {
+            c[i] = if a[i] != 0 && b[i] != 0 { -1 } else { 0 };
+        }
+
+        c
+    }
+
+    #[inline]
+    fn load_select_ptr(ptr: *const u8, mask: [i8; BYTES]) -> [u8; BYTES] {
+        let mut c = [0; BYTES];
+
+        for i in 0..BYTES {
+            if mask[i] != 0 {
+                c[i] = unsafe { *ptr.add(i) };
+            }
+        }
+
+        c
     }
 }
 
@@ -419,17 +443,20 @@ mod tests {
     mod candidates {
         use super::*;
 
-        static DATA: Simd<u8, 64> = Simd::from_array([
+        static DATA: [u8; BYTES] = [
             0, 0, 0, 0, 0, 0, 0, 0x46, 0x41, 0x53, 0x54, 0x46, 0x41, 0, 0, 0, 0, 0, 0x46, 0, 0, 0,
             0, 0, 0x46, 0x41, 0x53, 0x54, 0x46, 0x41, 0, 0, 0, 0, 0, 0x46, 0, 0, 0, 0, 0, 0, 0x46,
             0x41, 0x53, 0x54, 0x46, 0x41, 0, 0, 0, 0, 0, 0x46, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x46,
-        ]);
+        ];
 
         #[test]
         fn initial_candidates_1() {
             const ALIGNMENT: usize = 1;
             let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
-            let data = &DATA[3..];
+            let mut data = [0u8; 2 * BYTES];
+            let align = data.as_ptr().align_offset(BYTES);
+            data[align..align + BYTES].copy_from_slice(DATA.as_slice());
+            let data = &data[align + 3..];
             let offset =
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
@@ -447,7 +474,10 @@ mod tests {
         fn initial_candidates_2() {
             const ALIGNMENT: usize = 2;
             let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
-            let data = &DATA[3..];
+            let mut data = [0u8; 2 * BYTES];
+            let align = data.as_ptr().align_offset(BYTES);
+            data[align..align + BYTES].copy_from_slice(DATA.as_slice());
+            let data = &data[align + 3..];
             let offset =
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
@@ -465,7 +495,10 @@ mod tests {
         fn initial_candidates_4() {
             const ALIGNMENT: usize = 4;
             let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
-            let data = &DATA[3..];
+            let mut data = [0u8; 2 * BYTES];
+            let align = data.as_ptr().align_offset(BYTES);
+            data[align..align + BYTES].copy_from_slice(DATA.as_slice());
+            let data = &data[align + 3..];
             let offset =
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
@@ -483,7 +516,10 @@ mod tests {
         fn initial_candidates_8() {
             const ALIGNMENT: usize = 8;
             let pattern = Pattern::<ALIGNMENT, BYTES>::new(PATTERN);
-            let data = &DATA[3..];
+            let mut data = [0u8; 2 * BYTES];
+            let align = data.as_ptr().align_offset(BYTES);
+            data[align..align + BYTES].copy_from_slice(DATA.as_slice());
+            let data = &data[align + 3..];
             let offset =
                 Scanner::<ALIGNMENT, BYTES>::first_offset(data.as_ptr(), pattern.first_byte_offset);
             // DATA is BYTES aligned, which means that this value should never change
@@ -502,7 +538,7 @@ mod tests {
 
         #[test]
         fn second_chunk_last_byte() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[data.len() - 1] = 1;
@@ -514,7 +550,7 @@ mod tests {
 
         #[test]
         fn byte_offset_in_consume_candidates() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[1] = 1;
@@ -526,7 +562,7 @@ mod tests {
 
         #[test]
         fn byte_offset_out_of_bounds_read() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[0] = 1;
@@ -537,7 +573,7 @@ mod tests {
 
         #[test]
         fn trailing_wildcard_at_eof() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[data.len() - 1] = 1;
@@ -548,7 +584,7 @@ mod tests {
 
         #[test]
         fn leading_wildcard_underflow() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[BYTES] = 1;
@@ -559,7 +595,7 @@ mod tests {
 
         #[test]
         fn leading_wildcard_boundary() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[BYTES] = 1;
@@ -579,7 +615,7 @@ mod tests {
 
         #[test]
         fn pattern_lt_alignment() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             let src = &[0u8, 0x05, 0xff, 0xf7, 0x00];
@@ -592,7 +628,7 @@ mod tests {
 
         #[test]
         fn max_wildcard_prefix() {
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             data[data.len() - 1 - BYTES] = 1;
@@ -608,7 +644,7 @@ mod tests {
         #[test]
         fn alignment_first_possible_eq_data() {
             let pat = Pattern::<2, BYTES>::new("? ? 01");
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             let mut iter = pat.matches(&data[BYTES - 1..BYTES + 2]);
@@ -618,7 +654,7 @@ mod tests {
         #[test]
         fn leading_wildcards_match_start_to_end() {
             let pat = Pattern::<2, BYTES>::new("? ? ? ? 00");
-            let mut data: [Simd<u8, BYTES>; 2] = Default::default();
+            let mut data: [[u8; BYTES]; 2] = [[0; BYTES]; 2];
             let data =
                 unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, 2 * BYTES) };
             let mut iter = pat.matches(&data[10..15]);
