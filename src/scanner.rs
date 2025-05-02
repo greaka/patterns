@@ -246,6 +246,7 @@ where
             // circuit at the start of this function. Removing that short circuit will
             // violate FusedIterator guarantees
             self.position += BYTES;
+            prefetch(self.data.as_ptr().with_addr(self.position));
             // check if the next 2 chunks are fully within bounds
             if self.position + 2 * BYTES >= self.end {
                 #[cold]
@@ -311,6 +312,11 @@ where
         len: usize,
         pattern: &Pattern<ALIGNMENT, BYTES>,
     ) -> BytesMask {
+        prefetch(data);
+        prefetch((&raw const pattern.first_bytes).cast());
+        if ALIGNMENT > 1 {
+            prefetch((&raw const pattern.first_bytes_mask).cast());
+        }
         let len_mask = Self::data_len_mask(len);
         // UNALIGNED is the first parameter on purpose
         // build_candidates is either called fully aligned or at the start or end
@@ -345,6 +351,12 @@ where
     unsafe fn consume_candidates<const SAFE_READ: bool>(
         &mut self,
     ) -> Option<<Self as Iterator>::Item> {
+        let base_position = self.position - self.pattern.first_byte_offset as usize;
+        if !SAFE_READ {
+            prefetch(self.data.as_ptr().with_addr(base_position + BYTES));
+        }
+        prefetch((&raw const self.pattern.bytes).cast());
+        prefetch((&raw const self.pattern.mask).cast());
         loop {
             if self.candidates_mask == 0 {
                 return None;
@@ -353,7 +365,9 @@ where
             let offset = self.candidates_mask.trailing_zeros() as usize;
             self.candidates_mask ^= 1 << offset;
 
-            let offset_ptr = self.position + offset - self.pattern.first_byte_offset as usize;
+            let offset_ptr = base_position + offset;
+            let data_ptr = self.data.as_ptr().with_addr(offset_ptr);
+            prefetch(data_ptr);
             // initial_candidates includes a bounds check at candidates creation
             // subsequent candidate creations cannot underflow
             debug_assert_opt!(offset_ptr >= self.data.as_ptr().addr());
@@ -366,12 +380,7 @@ where
                 return None;
             }
             let data_len_mask = Self::data_len_mask(len);
-            let data = unsafe {
-                Self::load::<SAFE_READ, true>(
-                    self.data.as_ptr().with_addr(offset_ptr),
-                    data_len_mask,
-                )
-            };
+            let data = unsafe { Self::load::<SAFE_READ, true>(data_ptr, data_len_mask) };
 
             let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
 
@@ -403,6 +412,19 @@ where
         } else {
             *(data as *const _)
         }
+    }
+}
+
+/// prefetches aligned 64 bytes containing the given address to L1 cache
+#[inline(always)]
+fn prefetch(ptr: *const u8) {
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86 as arch;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64 as arch;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        arch::_mm_prefetch::<{ arch::_MM_HINT_T0 }>(ptr as _)
     }
 }
 
