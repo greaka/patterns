@@ -35,9 +35,9 @@ where
     /// pointer to first valid byte of data
     data: &'data [u8],
     /// pointer to one byte past the end of data
-    end: *const u8,
+    end: usize,
     /// iterator position
-    position: *const u8,
+    position: usize,
     /// indicates that `self.position + BYTES > self.end`
     exhausted: bool,
 }
@@ -85,12 +85,9 @@ where
         // this will be checked before searching for new candidates
         // # Safety
         // it is assumed that data.as_ptr() - BYTES doesn't underflow
-        let position = data
-            .as_ptr()
-            .wrapping_add(align_offset)
-            .wrapping_offset(-(BYTES as isize));
-
-        let end = unsafe { data.as_ptr().add(data.len()) };
+        let data_addr = data.as_ptr().addr();
+        let position = data_addr + align_offset - BYTES;
+        let end = data_addr + data.len();
 
         Self {
             pattern,
@@ -98,7 +95,7 @@ where
             end,
             position,
             candidates_mask,
-            exhausted: position.wrapping_add(2 * BYTES) >= end,
+            exhausted: position + 2 * BYTES >= end,
         }
     }
 
@@ -186,14 +183,17 @@ where
     }
 
     fn end_candidates(&mut self) {
+        debug_assert_opt!(self.end >= self.position);
         // # Safety
         // self.end and self.position are both initialized from self.data
-        let remaining_length = unsafe { self.end.offset_from(self.position) };
-        debug_assert_opt!(remaining_length >= 0);
-        let remaining_length = remaining_length as usize;
+        let remaining_length = self.end - self.position;
 
         self.candidates_mask = unsafe {
-            Self::build_candidates::<true>(self.position, remaining_length, self.pattern)
+            Self::build_candidates::<true>(
+                self.data.as_ptr().with_addr(self.position),
+                remaining_length,
+                self.pattern,
+            )
         };
     }
 
@@ -201,8 +201,8 @@ where
         if let Some(position) = unsafe { self.consume_candidates::<true>() } {
             return Some(position);
         }
-        if self.position.wrapping_add(BYTES) < self.end {
-            self.position = self.position.wrapping_add(BYTES);
+        if self.position + BYTES < self.end {
+            self.position += BYTES;
             self.end_candidates();
         }
 
@@ -245,9 +245,9 @@ where
             // It is okay to unconditionally increase self.position because there is a short
             // circuit at the start of this function. Removing that short circuit will
             // violate FusedIterator guarantees
-            self.position = self.position.wrapping_add(BYTES);
+            self.position += BYTES;
             // check if the next 2 chunks are fully within bounds
-            if self.position.wrapping_add(2 * BYTES) >= self.end {
+            if self.position + 2 * BYTES >= self.end {
                 #[cold]
                 fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
                     scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
@@ -259,7 +259,7 @@ where
                     scanner.exhausted = true;
                     scanner.candidates_mask = unsafe {
                         Scanner::<'pattern, 'data, ALIGNMENT, BYTES>::build_candidates::<false>(
-                            scanner.position,
+                            scanner.data.as_ptr().with_addr(scanner.position),
                             BYTES,
                             scanner.pattern,
                         )
@@ -275,8 +275,13 @@ where
             // self.position was initialized to be aligned to BYTES, is only ever
             // increased in steps of BYTES, and self.position + BYTES is still within bounds
             // of self.data
-            self.candidates_mask =
-                unsafe { Self::build_candidates::<false>(self.position, BYTES, self.pattern) };
+            self.candidates_mask = unsafe {
+                Self::build_candidates::<false>(
+                    self.data.as_ptr().with_addr(self.position),
+                    BYTES,
+                    self.pattern,
+                )
+            };
         }
     }
 }
@@ -333,7 +338,7 @@ where
     ///   `<=self.end`
     ///
     /// This function requires:
-    /// - `self.position` to be within bounds
+    /// - `self.position + candidate_offset` to be within bounds
     // This function is part of the hot loop. There is probably
     // a lot of potential for optimization still in here
     #[inline]
@@ -348,24 +353,25 @@ where
             let offset = self.candidates_mask.trailing_zeros() as usize;
             self.candidates_mask ^= 1 << offset;
 
-            let offset_ptr = self
-                .position
-                .wrapping_add(offset)
-                .wrapping_sub(self.pattern.first_byte_offset as usize);
-            // # Safety
-            // self.position is initialized from self.data
-            let position = unsafe { offset_ptr.offset_from(self.data.as_ptr()) };
+            let offset_ptr = self.position + offset - self.pattern.first_byte_offset as usize;
             // initial_candidates includes a bounds check at candidates creation
             // subsequent candidate creations cannot underflow
-            debug_assert_opt!(position >= 0);
-            let position = position as usize;
+            debug_assert_opt!(offset_ptr >= self.data.as_ptr().addr());
+            // # Safety
+            // self.position is initialized from self.data
+            let position = offset_ptr - self.data.as_ptr().addr();
 
             let len = self.data.len() - position;
             if SAFE_READ && len < self.pattern.length as usize {
                 return None;
             }
             let data_len_mask = Self::data_len_mask(len);
-            let data = unsafe { Self::load::<SAFE_READ, true>(offset_ptr, data_len_mask) };
+            let data = unsafe {
+                Self::load::<SAFE_READ, true>(
+                    self.data.as_ptr().with_addr(offset_ptr),
+                    data_len_mask,
+                )
+            };
 
             let mut result = data.simd_eq(self.pattern.bytes).bitand(self.pattern.mask);
 
