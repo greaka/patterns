@@ -64,6 +64,13 @@ where
     /// ```
     #[inline]
     pub(crate) const fn reduce_bitmask(mut bitmask: BytesMask) -> BytesMask {
+        // todo: cast the simd mask to a different type and simd_eq with a const value
+        // requires #![feature(min_generic_const_args)]
+        // https://github.com/rust-lang/rust-project-goals/issues/100
+        if bitmask == 0 {
+            return bitmask;
+        }
+
         let mut shift = 1;
         while shift < ALIGNMENT {
             bitmask &= bitmask >> shift;
