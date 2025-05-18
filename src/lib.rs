@@ -1,6 +1,6 @@
 //! # Pattern matching library
 //! Allows you to search for a pattern within data via an iterator interface.
-//! This library uses the core::simd abstraction and is fully no_std compatible.
+//! This library uses the core::simd abstraction and is fully no_std, no alloc.
 //!
 //! ## Usage
 //! ```
@@ -16,13 +16,25 @@
 //!     // use _found
 //! }
 //! ```
+//! More advanced use cases may also specify a target alignment required to
+//! match, or the LANE size with which to search:
+//!
+//! ```
+//! use patterns::Pattern;
+//!
+//! let _pattern: Pattern<4, 64> = "00 01 02 . ff".parse().unwrap();
+//! ```
 //!
 //! ## Limitations
-//! - The maximum amount of bytes supported inside a pattern are 64 bytes
-//! - Target alignment of the pattern to search for must be less or equal to 64
-//! - The pointer of data to search through must follow these invariants:
+//! - The maximum amount of bytes supported inside a pattern are determined by
+//!   the chosen 2nd const parameter (default 64)
+//! - Target alignment of the pattern to search for must be less or equal to
+//!   that 2nd const parameter
+//! - The pointer of data to search through must adhere to these bounds:
 //!   - `data.as_ptr() - 64 > `[`usize::MIN`]
 //!   - `data.as_ptr() + data.len() + 64 < `[`usize::MAX`]
+//!
+//! In practice, it's impossible to be outside of these bounds when using an OS.
 
 // todos
 // optimize pattern.len() <= alignment
@@ -33,15 +45,18 @@
 // untested on big endian
 #![cfg(target_endian = "little")]
 
-pub use crate::{pattern::Pattern, scanner::Scanner};
+pub use crate::{
+    pattern::{ParsePatternError, Pattern},
+    scanner::Scanner,
+};
 
 mod const_utils;
 mod masks;
 mod pattern;
 mod scanner;
 
-/// The type that holds a bit for each byte in [`BYTES`]
-pub type BytesMask = u64;
+/// The type that holds a bit for each byte in `BYTES`
+type BytesMask = u64;
 
 const V128: usize = 16;
 const V256: usize = 32;
@@ -52,6 +67,9 @@ const VUNKNOWN: usize = V512;
 /// width. This is a best-effort, defaulting to maximum supported bytes.
 ///
 /// Note that `BYTES` also determines maximum pattern length.
+///
+/// There was no benchmark performed comparing different values of BYTES to
+/// assumed optimal platform target width.
 pub const OPTIMAL_BYTES: usize = default_vector_target_width();
 
 const fn default_vector_target_width() -> usize {

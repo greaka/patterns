@@ -19,7 +19,7 @@ macro_rules! debug_assert_opt {
 }
 
 /// An [`Iterator`] for searching a given [`Pattern`] in data
-#[must_use]
+#[must_use = "Scanner is an iterator and must be consumed to search."]
 #[derive(Clone)]
 pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
 where
@@ -28,18 +28,16 @@ where
 {
     /// needle
     pattern: &'pattern Pattern<ALIGNMENT, BYTES>,
-    /// one bit for each byte in [`BYTES`]
+    /// one bit for each byte in `BYTES`
     /// little endian least significant bit corresponds to the first byte in the
     /// current slice of data
     candidates_mask: BytesMask,
     /// pointer to first valid byte of data
     data: &'data [u8],
-    /// pointer to one byte past the end of data `- 2 * BYTES`
+    /// pointer to one byte past the end of data minus `2 * BYTES`
     end: usize,
     /// iterator position
     position: usize,
-    /// indicates that `self.position + BYTES > self.end`
-    exhausted: bool,
 }
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
@@ -48,33 +46,28 @@ where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
     LaneCount<BYTES>: SupportedLaneCount,
 {
-    const _ALIGNED: bool = Self::validate_alignment();
-
-    const fn validate_alignment() -> bool {
-        if ALIGNMENT > BYTES {
-            panic!("Pattern ALIGNMENT must be less or equal to BYTES");
-        }
-        true
-    }
-
-    /// Creates an [`Iterator`], see also [`Pattern::matches`]
-    ///
-    /// # Panics
-    /// Panics when `data.len() > usize::MAX - BYTES`.
-    ///
-    /// In the real world, it's near impossible to create a buffer near the size
-    /// of [`usize::max`]. This reserved space is required to keep the hot loop
-    /// efficient while still providing a correct algorithm.
+    /// Creates an [`Iterator`] to search in `data`.
     pub fn new(pattern: &'pattern Pattern<ALIGNMENT, BYTES>, data: &'data [u8]) -> Self {
-        let _aligned = Self::_ALIGNED;
+        if data.is_empty() {
+            return Self {
+                pattern,
+                data,
+                candidates_mask: 0,
+                end: usize::MIN,
+                position: usize::MAX,
+            };
+        }
+
+        // sanity checks that should never be hit on any system with an OS.
+        //
+        // this should never hit, but still shows the bounds that are assumed
         debug_assert_opt!(data.len() <= usize::MAX - BYTES);
-        debug_assert_opt!(!data.is_empty());
-        debug_assert_opt!(
-            ((&data[data.len() - 1]) as *const u8 as usize) <= usize::MAX - 3 * BYTES
-        );
+        // check for potential address overflows
+        debug_assert_opt!((data.as_ptr().addr() + data.len() - 1) <= usize::MAX - 3 * BYTES);
+        // check for potential address underflows
         debug_assert_opt!(data.as_ptr().addr() + data.len() >= 2 * BYTES);
 
-        // data + align_offset required to align to BYTES
+        // data.addr() + align_offset required to align to BYTES
         let align_offset = Self::first_offset(data.as_ptr(), pattern.first_byte_offset);
         let candidates_mask = Self::initial_candidates(pattern, data, align_offset);
 
@@ -96,10 +89,12 @@ where
             end,
             position,
             candidates_mask,
-            exhausted: position >= end,
         }
     }
 
+    /// calculates the offset greater or equal to
+    /// `first_possible_candidate_offset` that aligns to BYTES while not
+    /// exceeding `first_possible_candidate_offset + BYTES`
     fn first_offset(data: *const u8, first_byte_offset: u8) -> usize {
         let mut align_offset = data.align_offset(align_of::<Simd<u8, BYTES>>());
         if align_offset == 0 {
@@ -113,6 +108,8 @@ where
         align_offset
     }
 
+    /// calculates the initial candidates mask and offsets the result to align
+    /// to BYTES, matching the position of the iterator at the start.
     #[inline]
     fn initial_candidates(
         pattern: &Pattern<ALIGNMENT, BYTES>,
@@ -120,7 +117,7 @@ where
         align_offset: usize,
     ) -> BytesMask {
         // The general idea is to eliminate extra branches inside the hot loop.
-        // For that, the potentially unaligned start of the dataset needs to get
+        // For that, the potentially unaligned start of the dataset needs to be
         // prepared to behave exactly like the hot loop.
         // This is done by setting the data pointer out of bounds and using a candidate
         // mask that is shifted to have its end align with the start of the
@@ -138,13 +135,13 @@ where
         //                     start
         // ----------------dd???|xxxxxxx|bbbbbbbbbbbbbbbbbbbbb
         //                      ^-first candidates search in this area, bail if len <= 0
-        // ---------------------|x---x---------------|
+        // ---------------------|x---x---------------|bbbbbbbb
         //                       ^-reduce bitmask to pattern alignment
-        // ---------------------ddddddddd---------------------
-        // |-----------------------x---x|
-        //                             ^-shift to end
+        // ----------------dd???dddddddd----------------------
+        // |---------------------x---x--|
+        //                              ^-shift to end
 
-        // data + data_align is the offset of the first possible valid candidate
+        // data.addr() + data_align is the offset of the first possible valid candidate
         // + the offset defined by the candidates pattern
         let data_align = align_offset % ALIGNMENT;
 
@@ -155,7 +152,7 @@ where
 
         let first_possible = data_align + pattern.first_byte_offset as usize;
         let max_offset = min(align_offset, data.len());
-        // alignment_first_possible_eq_data() is an edge case where valid inputs
+        // alignment_first_possible_eq_data_len() is an edge case where valid inputs
         // can trigger this branch
         //
         // it is fine to not check candidates in this case because the pattern specifies
@@ -183,7 +180,10 @@ where
         result << (BYTES + first_possible - align_offset)
     }
 
+    /// calculate candidates for the end-part of the slice that requires bounds
+    /// checks
     fn end_candidates(&mut self) {
+        // sanity check for the state the iterator is expected to be in at this point
         debug_assert_opt!(self.end + 2 * BYTES >= self.position);
         // # Safety
         // self.end and self.position are both initialized from self.data
@@ -198,6 +198,8 @@ where
         };
     }
 
+    /// search logic for when unchecked, aligned search is not safely possible
+    /// anymore
     fn end_search(&mut self) -> Option<<Self as Iterator>::Item> {
         if let Some(position) = unsafe { self.consume_candidates::<true>() } {
             return Some(position);
@@ -219,14 +221,20 @@ where
 {
     type Item = usize;
 
+    /// advance the iterator until the next match
     fn next(&mut self) -> Option<Self::Item> {
         // In case of removing this, make sure self.position is not unconditionally
         // increased to prevent violating FusedIterator guarantees
-        if self.exhausted {
+        if self.position >= self.end {
             return self.end_search();
         }
 
+        // hot loop
         loop {
+            // # Safety
+            // both right outside and inside this loop, self.position is checked to still
+            // have enough margin to load BYTES bytes of data, even if the candidates mask
+            // indicates a candidate at the furthest possible position
             if let Some(position) = unsafe { self.consume_candidates::<false>() } {
                 #[cold]
                 fn ret(pos: usize) -> Option<usize> {
@@ -247,30 +255,6 @@ where
             // circuit at the start of this function. Removing that short circuit will
             // violate FusedIterator guarantees
             self.position += BYTES;
-            // check if the next 2 chunks are fully within bounds
-            if self.position >= self.end {
-                #[cold]
-                fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
-                    scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
-                ) -> Option<usize>
-                where
-                    LaneCount<ALIGNMENT>: SupportedLaneCount,
-                    LaneCount<BYTES>: SupportedLaneCount,
-                {
-                    scanner.exhausted = true;
-                    scanner.candidates_mask = unsafe {
-                        Scanner::<'pattern, 'data, ALIGNMENT, BYTES>::build_candidates::<false>(
-                            scanner.data.as_ptr().with_addr(scanner.position),
-                            BYTES,
-                            scanner.pattern,
-                        )
-                    };
-
-                    scanner.end_search()
-                }
-
-                return branch(self);
-            }
 
             // # Safety
             // self.position was initialized to be aligned to BYTES, is only ever
@@ -283,6 +267,24 @@ where
                     self.pattern,
                 )
             };
+
+            // check if the next 2 chunks are fully within bounds
+            if self.position >= self.end {
+                #[cold]
+                fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
+                    scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
+                ) -> Option<usize>
+                where
+                    LaneCount<ALIGNMENT>: SupportedLaneCount,
+                    LaneCount<BYTES>: SupportedLaneCount,
+                {
+                    // the one time this branch is hit, there's still enough leeway to generate
+                    // candidates the optimized way one more time
+                    scanner.end_search()
+                }
+
+                return branch(self);
+            }
         }
     }
 }
@@ -301,22 +303,22 @@ where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
     LaneCount<BYTES>: SupportedLaneCount,
 {
-    /// if `UNALIGNED == false`, then the data pointer must be aligned to
-    /// [`BYTES`] and `data + BYTES <= self.end`
+    /// if `SAFE_READ == false`, then the data pointer must be aligned to
+    /// `BYTES` and `data + BYTES <= end_of_slice`
     ///
     /// `data` must always be aligned to `ALIGNMENT`!
     #[inline]
     #[must_use]
-    unsafe fn build_candidates<const UNALIGNED: bool>(
+    unsafe fn build_candidates<const SAFE_READ: bool>(
         data: *const u8,
         len: usize,
         pattern: &Pattern<ALIGNMENT, BYTES>,
     ) -> BytesMask {
         let len_mask = Self::data_len_mask(len);
-        // UNALIGNED is the first parameter on purpose
+        // SAFE_READ is the first parameter on purpose
         // build_candidates is either called fully aligned or at the start or end
         // of the data slice. a full safe read is required when operating near edges
-        let data = unsafe { Self::load::<UNALIGNED, false>(data, len_mask) };
+        let data = unsafe { Self::load::<SAFE_READ, false>(data, len_mask) };
 
         let mut search = data.simd_eq(pattern.first_bytes);
         if ALIGNMENT > 1 {
@@ -324,7 +326,7 @@ where
         }
         let mut result = search.to_bitmask();
 
-        if UNALIGNED {
+        if SAFE_READ {
             let mask =
                 Self::mask_min_len(len_mask.to_bitmask(), pattern.first_bytes_mask.to_bitmask());
             result &= mask;
@@ -335,13 +337,13 @@ where
 
     /// This function guarantees:
     /// - only `self.candidates_mask` is modified
-    /// - if `SAFE_READ == true`, then all bytes read are `>=self.position` and
-    ///   `<=self.end`
+    /// - all bytes read are `>=self.position + candidate_offset`
+    /// - if `SAFE_READ == true`, then all bytes read are `<=data_slice_end`
     ///
     /// This function requires:
     /// - `self.position + candidate_offset` to be within bounds
     // This function is part of the hot loop. There is probably
-    // a lot of potential for optimization still in here
+    // potential for optimization still in here
     #[inline]
     unsafe fn consume_candidates<const SAFE_READ: bool>(
         &mut self,
@@ -389,7 +391,7 @@ where
     /// data_len_mask must be generated using [`Self::data_len_mask`]
     ///
     /// if `UNALIGNED == false`, then the data pointer must be aligned to
-    /// [`BYTES`]
+    /// `BYTES`
     #[inline]
     unsafe fn load<const SAFE_READ: bool, const UNALIGNED: bool>(
         data: *const u8,
@@ -495,6 +497,14 @@ mod tests {
 
             assert_eq!(result, control);
         }
+    }
+
+    #[test]
+    fn empty_data() {
+        let pattern: Pattern = Pattern::new("00");
+        let none = pattern.matches(&[]).next();
+
+        assert_eq!(None, none);
     }
 
     mod regressions {

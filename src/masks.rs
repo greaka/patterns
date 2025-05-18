@@ -36,6 +36,8 @@ where
     /// res   1111_1000_0000
     /// ```
     pub(crate) const fn mask_min_len(len: BytesMask, pattern_mask: BytesMask) -> BytesMask {
+        // TODO: once `reduce_bitmask` can use simd arrays, convert all mask functions
+        // and benchmark
         let groups = Self::reduce_bitmask(pattern_mask | len);
         // 1000_1000_0000
         let spread = Self::extend_bitmask(groups);
@@ -43,6 +45,13 @@ where
         spread | len
     }
 
+    /// creates a chunk mask that fills the first bit of every chunk of size
+    /// ALIGNMENT
+    ///
+    /// ```text
+    /// ALIGNMENT = 4
+    /// result: 0001 0001 0001 0001
+    /// ```
     pub(crate) const fn chunk_mask() -> BytesMask {
         let pattern = 1;
         let mut mask = 0;
@@ -64,7 +73,7 @@ where
     /// ```
     #[inline]
     pub(crate) const fn reduce_bitmask(mut bitmask: BytesMask) -> BytesMask {
-        // todo: cast the simd mask to a different type and simd_eq with a const value
+        // TODO: cast the simd mask to a different type and simd_eq with a const value
         // requires #![feature(min_generic_const_args)]
         // https://github.com/rust-lang/rust-project-goals/issues/100
         if bitmask == 0 {

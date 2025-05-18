@@ -11,24 +11,35 @@ use crate::{const_utils, Scanner, VUNKNOWN as DEFAULT_BYTES};
 /// A prepared pattern. Allows to search for a given byte sequence in data.
 /// Supports masking and alignment requirements.
 ///
-/// [`BYTES`] Determines the LANES size.
+/// `BYTES` determines the LANES size.
 /// Every block of data is processed in chunks of `BYTES` bytes.
 /// Rust will compile this to other targets without issue, but will use
 /// inner loops for that.
 /// It is also the max length for patterns.
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = DEFAULT_BYTES>
 where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
     LaneCount<BYTES>: SupportedLaneCount,
 {
+    /// raw pattern
     pub(crate) bytes: Simd<u8, BYTES>,
+    /// pattern mask
     pub(crate) mask: Mask<i8, BYTES>,
+    /// preprocessed chunk of `self.bytes` of size ALIGNMENT,
+    /// repeated `BYTES / ALIGNMENT` times
+    ///
+    /// first aligned chunk that has the fewest wildcards
     pub(crate) first_bytes: Simd<u8, BYTES>,
+    /// mask for `self.first_bytes`
+    ///
     /// first bytes mask is inverted
     /// x & mask == mask === x | ^mask == -1
     pub(crate) first_bytes_mask: Mask<i8, BYTES>,
+    /// offset of `self.first_bytes` from the start of the pattern
     pub(crate) first_byte_offset: u8,
+    /// length of the pattern
     pub(crate) length: u8,
     phantom: PhantomData<[u8; ALIGNMENT]>,
 }
@@ -38,12 +49,17 @@ where
     LaneCount<ALIGNMENT>: SupportedLaneCount,
     LaneCount<BYTES>: SupportedLaneCount,
 {
-    /// Parse a pattern. Use the [`FromStr`] impl to return an error instead of
+    const _ALIGNED: () = {
+        if ALIGNMENT > BYTES {
+            panic!("Pattern ALIGNMENT must be less or equal to BYTES");
+        }
+    };
+
+    /// Parse a pattern. Use [`Pattern::from_str`] to return an error instead of
     /// panicking.
     ///
     /// # Panics
     /// Panics if [`ParsePatternError`] is returned.
-    #[must_use]
     #[inline]
     pub const fn new(pattern: &str) -> Self {
         match Self::from_str(pattern) {
@@ -55,13 +71,18 @@ where
     }
 
     /// Create a pattern from a byte slice and a mask.
-    /// Byte slices longer than [`BYTES`] are cut short.
+    /// Byte slices longer than `BYTES` are cut short.
     /// Mask expects a [`u64`] bitencoding. A 0 bit marks the byte as wildcard.
     /// Mask is trimmed to `bytes.len()`.
     ///
     /// # Panics
     /// Panics when all bytes are masked as wildcards.
     pub fn from_slice(bytes: &[u8], mask: u64) -> Self {
+        #[expect(
+            path_statements,
+            reason = "This forces evaluation of the const and emits a compile time error."
+        )]
+        Self::_ALIGNED;
         let mut input: [u8; BYTES] = [0; BYTES];
         let length = bytes.len().min(BYTES);
         input[..length].copy_from_slice(bytes);
@@ -89,7 +110,20 @@ where
         }
     }
 
+    /// Parses a string to a pattern.
+    ///
+    /// Expected format:
+    /// ```text
+    /// ? 1A . B4 ?? e0 .. 5f
+    /// ```
+    /// `?` and `.` mark wildcards. Only the first character is checked for
+    /// wildcards. `10 .error 00` is equivalent to `10 ? 00`.
     pub const fn from_str(s: &str) -> Result<Self, ParsePatternError> {
+        #[expect(
+            path_statements,
+            reason = "This forces evaluation of the const and emits a compile time error."
+        )]
+        Self::_ALIGNED;
         let bytes = const_utils::SplitAsciiWhitespace::new(s);
 
         let length = bytes.clone().count();
@@ -138,6 +172,8 @@ where
 
         // There is no const way to create a Mask
         // # Safety: Mask is defined as repr transparent over Simd<T>
+        //
+        // transmute doesn't accept types with sizes depending on BYTES
         let mask = Simd::from_array(mask);
         let mask = unsafe { *(&mask as *const _ as *const _) };
 
@@ -152,7 +188,7 @@ where
         })
     }
 
-    /// Creates an iterator through data. See [`Scanner::new`] for remarks.
+    /// Creates an [`Iterator`] over data.
     #[inline]
     pub fn matches<'pattern, 'data>(
         &'pattern self,
@@ -224,22 +260,28 @@ where
     let bytes = Simd::from_array(first);
     // There is no const way to create a Mask
     // # Safety: Mask is defined as repr transparent over Simd<T>
+    //
+    // transmute doesn't accept types with sizes depending on BYTES
     let mask = Simd::from_array(first_mask);
     let mask = unsafe { *(&mask as *const _ as *const _) };
 
     (bytes, mask)
 }
 
-impl FromStr for Pattern {
+impl<const ALIGNMENT: usize, const BYTES: usize> FromStr for Pattern<ALIGNMENT, BYTES>
+where
+    LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
+{
     type Err = ParsePatternError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Pattern::from_str(s)
+        Self::from_str(s)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParsePatternError {
     PatternTooLong,
