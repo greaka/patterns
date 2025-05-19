@@ -38,6 +38,11 @@ where
     end: usize,
     /// iterator position
     position: usize,
+    /// whether the end of the data slice is near
+    ///
+    /// removing this causes a regression in performance, the branch for setting
+    /// exhausted at the end of hot looping will be moved closer
+    exhausted: bool,
 }
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
@@ -55,6 +60,7 @@ where
                 candidates_mask: 0,
                 end: usize::MIN,
                 position: usize::MAX,
+                exhausted: true,
             };
         }
 
@@ -89,6 +95,7 @@ where
             end,
             position,
             candidates_mask,
+            exhausted: position >= end,
         }
     }
 
@@ -225,7 +232,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // In case of removing this, make sure self.position is not unconditionally
         // increased to prevent violating FusedIterator guarantees
-        if self.position >= self.end {
+        if self.exhausted {
             return self.end_search();
         }
 
@@ -255,6 +262,30 @@ where
             // circuit at the start of this function. Removing that short circuit will
             // violate FusedIterator guarantees
             self.position += BYTES;
+            // check if the next 2 chunks are fully within bounds
+            if self.position >= self.end {
+                #[cold]
+                fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
+                    scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
+                ) -> Option<usize>
+                where
+                    LaneCount<ALIGNMENT>: SupportedLaneCount,
+                    LaneCount<BYTES>: SupportedLaneCount,
+                {
+                    scanner.exhausted = true;
+                    scanner.candidates_mask = unsafe {
+                        Scanner::<'pattern, 'data, ALIGNMENT, BYTES>::build_candidates::<false>(
+                            scanner.data.as_ptr().with_addr(scanner.position),
+                            BYTES,
+                            scanner.pattern,
+                        )
+                    };
+
+                    scanner.end_search()
+                }
+
+                return branch(self);
+            }
 
             // # Safety
             // self.position was initialized to be aligned to BYTES, is only ever
@@ -267,24 +298,6 @@ where
                     self.pattern,
                 )
             };
-
-            // check if the next 2 chunks are fully within bounds
-            if self.position >= self.end {
-                #[cold]
-                fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
-                    scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
-                ) -> Option<usize>
-                where
-                    LaneCount<ALIGNMENT>: SupportedLaneCount,
-                    LaneCount<BYTES>: SupportedLaneCount,
-                {
-                    // the one time this branch is hit, there's still enough leeway to generate
-                    // candidates the optimized way one more time
-                    scanner.end_search()
-                }
-
-                return branch(self);
-            }
         }
     }
 }
