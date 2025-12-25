@@ -38,15 +38,18 @@ fn xxh_alignment(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("xxh_align");
     for offset in 0..16usize {
-        with_misaligned(&data, offset, |data| {
-            group.bench_with_input(
-                criterion::BenchmarkId::from_parameter(offset),
-                &offset,
-                |b, i: &usize| {
-                    avx(b, &mid_1, data);
-                },
-            )
-        });
+        #[allow(clippy::modulo_one)]
+        if offset % ALIGN == 0 {
+            with_misaligned(&data, offset, |data| {
+                group.bench_with_input(
+                    criterion::BenchmarkId::from_parameter(offset),
+                    &offset,
+                    |b, i: &usize| {
+                        avx(b, &mid_1, data);
+                    },
+                )
+            });
+        }
     }
 
     group.finish();
