@@ -46,7 +46,7 @@
 // explore getting rid of pattern.length
 
 #![feature(portable_simd)]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 // untested on big endian
 #![cfg(target_endian = "little")]
 
@@ -56,6 +56,8 @@ pub use crate::{
 };
 
 mod const_utils;
+#[cfg(feature = "std")]
+pub(crate) mod dispatch;
 mod masks;
 mod pattern;
 mod scanner;

@@ -229,7 +229,46 @@ where
     type Item = usize;
 
     /// advance the iterator until the next match
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
+        #[cfg(feature = "std")]
+        {
+            use crate::dispatch::Dispatch::*;
+            match crate::dispatch::get_or_init() {
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                Avx2 => unsafe { self.next_avx2() },
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                SSE4 => unsafe { self.next_sse4() },
+                #[cfg(target_arch = "aarch64")]
+                Neon => unsafe { self.next_neon() },
+                #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+                Simd128 => self.next(),
+                #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+                Plain => self.next(),
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        self.next()
+    }
+}
+
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> FusedIterator
+    for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
+where
+    LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
+{
+}
+
+impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
+    Scanner<'pattern, 'data, ALIGNMENT, BYTES>
+where
+    LaneCount<ALIGNMENT>: SupportedLaneCount,
+    LaneCount<BYTES>: SupportedLaneCount,
+{
+    /// advance the iterator until the next match
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
         // In case of removing this, make sure self.position is not unconditionally
         // increased to prevent violating FusedIterator guarantees
         if self.exhausted {
@@ -300,22 +339,7 @@ where
             };
         }
     }
-}
 
-impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> FusedIterator
-    for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
-}
-
-impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
-    Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
     /// if `SAFE_READ == false`, then the data pointer must be aligned to
     /// `BYTES` and `data + BYTES <= end_of_slice`
     ///
@@ -419,6 +443,24 @@ where
         } else {
             *(data as *const _)
         }
+    }
+
+    #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
+    #[target_feature(enable = "avx2")]
+    fn next_avx2(&mut self) -> Option<usize> {
+        self.next()
+    }
+
+    #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
+    #[target_feature(enable = "sse4.2")]
+    fn next_sse4(&mut self) -> Option<usize> {
+        self.next()
+    }
+
+    #[cfg(all(feature = "std", target_arch = "aarch64"))]
+    #[target_feature(enable = "neon")]
+    fn next_neon(&mut self) -> Option<usize> {
+        self.next()
     }
 }
 

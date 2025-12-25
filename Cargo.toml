@@ -7,6 +7,10 @@ description = "no_std, no alloc pattern scan library using simd"
 repository = "https://github.com/greaka/patterns"
 license = "MIT/Apache-2.0"
 
+[features]
+default = ["std"]
+std = []
+
 [[bench]]
 name = "main"
 harness = false
