@@ -233,18 +233,24 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         #[cfg(feature = "std")]
         {
-            use crate::dispatch::Dispatch::*;
+            use crate::dispatch::Dispatch;
             match crate::dispatch::get_or_init() {
                 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                Avx2 => unsafe { self.next_avx2() },
+                Dispatch::Avx512 => unsafe { self.next_avx512() },
                 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                SSE4 => unsafe { self.next_sse4() },
-                #[cfg(target_arch = "aarch64")]
-                Neon => unsafe { self.next_neon() },
+                Dispatch::Avx2 => unsafe { self.next_avx2() },
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                Dispatch::Sse4 => unsafe { self.next_sse4() },
+                #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+                Dispatch::Neon => unsafe { self.next_neon() },
+                #[cfg(any(target_arch = "mips", target_arch = "mips64"))]
+                Dispatch::Msa => unsafe { self.next_msa() },
+                #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+                Dispatch::V => unsafe { self.next_v() },
                 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-                Simd128 => self.next(),
+                Dispatch::Simd128 => self.next(),
                 #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
-                Plain => self.next(),
+                Dispatch::Plain => self.next(),
             }
         }
         #[cfg(not(feature = "std"))]
@@ -446,6 +452,12 @@ where
     }
 
     #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
+    #[target_feature(enable = "avx512f")]
+    fn next_avx512(&mut self) -> Option<usize> {
+        self.next()
+    }
+
+    #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
     #[target_feature(enable = "avx2")]
     fn next_avx2(&mut self) -> Option<usize> {
         self.next()
@@ -457,9 +469,21 @@ where
         self.next()
     }
 
-    #[cfg(all(feature = "std", target_arch = "aarch64"))]
+    #[cfg(all(feature = "std", any(target_arch = "arm", target_arch = "aarch64")))]
     #[target_feature(enable = "neon")]
     fn next_neon(&mut self) -> Option<usize> {
+        self.next()
+    }
+
+    #[cfg(all(feature = "std", any(target_arch = "mips", target_arch = "mips64")))]
+    #[target_feature(enable = "msa")]
+    fn next_msa(&mut self) -> Option<usize> {
+        self.next()
+    }
+
+    #[cfg(all(feature = "std", any(target_arch = "riscv32", target_arch = "riscv64")))]
+    #[target_feature(enable = "v")]
+    fn next_v(&mut self) -> Option<usize> {
         self.next()
     }
 }

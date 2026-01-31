@@ -15,31 +15,66 @@ pub(crate) fn get_or_init() -> Dispatch {
     #[cold]
     fn init() -> Dispatch {
         let val = {
+            use Dispatch::*;
             #[cfg(target_arch = "aarch64")]
             {
                 if std::arch::is_aarch64_feature_detected!("neon") {
-                    Dispatch::Neon
+                    Neon
                 } else {
-                    Dispatch::Plain
+                    Plain
+                }
+            }
+            #[cfg(target_arch = "arm")]
+            {
+                if std::arch::is_arm_feature_detected!("neon") {
+                    Neon
+                } else {
+                    Plain
                 }
             }
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             {
-                if std::arch::is_x86_feature_detected!("avx2") {
-                    Dispatch::Avx2
+                if std::arch::is_x86_feature_detected!("avx512f") {
+                    Avx512
+                } else if std::arch::is_x86_feature_detected!("avx2") {
+                    Avx2
                 } else if std::arch::is_x86_feature_detected!("sse4.2") {
-                    Dispatch::SSE4
+                    Sse4
                 } else {
-                    Dispatch::Plain
+                    Plain
+                }
+            }
+            #[cfg(target_arch = "mips")]
+            {
+                if std::arch::is_mips_feature_detected!("msa") {
+                    Msa
+                } else {
+                    Plain
+                }
+            }
+            #[cfg(target_arch = "mips64")]
+            {
+                if std::arch::is_mips64_feature_detected!("msa") {
+                    Msa
+                } else {
+                    Plain
+                }
+            }
+            #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+            {
+                if std::arch::is_riscv_feature_detected!("v") {
+                    V
+                } else {
+                    Plain
                 }
             }
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             {
-                Dispatch::Simd128
+                Simd128
             }
             #[cfg(all(target_arch = "wasm32", not(target_feature = "simd128")))]
             {
-                Dispatch::Plain
+                Plain
             }
         };
 
@@ -58,11 +93,17 @@ pub(crate) fn get_or_init() -> Dispatch {
 #[derive(Clone, Copy)]
 pub(crate) enum Dispatch {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Avx512,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     Avx2,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    SSE4,
-    #[cfg(target_arch = "aarch64")]
+    Sse4,
+    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
     Neon,
+    #[cfg(any(target_arch = "mips", target_arch = "mips64"))]
+    Msa,
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    V,
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
     Simd128,
     #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
