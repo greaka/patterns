@@ -1,12 +1,9 @@
-use core::simd::{cmp::SimdPartialOrd, LaneCount, Mask, Simd, SupportedLaneCount};
+use core::simd::{cmp::SimdPartialOrd, Mask, Simd};
 
 use crate::{BytesMask, Scanner};
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// generates a mask that yields true until position `len`
     #[inline]

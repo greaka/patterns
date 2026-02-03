@@ -2,7 +2,7 @@ use core::{
     marker::PhantomData,
     num::IntErrorKind,
     ops::Not,
-    simd::{LaneCount, Mask, Simd, SupportedLaneCount},
+    simd::{Mask, Simd},
     str::FromStr,
 };
 
@@ -18,11 +18,7 @@ use crate::{const_utils, Scanner, VUNKNOWN as DEFAULT_BYTES};
 /// It is also the max length for patterns.
 #[derive(Clone, Debug)]
 #[must_use]
-pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = DEFAULT_BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+pub struct Pattern<const ALIGNMENT: usize = 1, const BYTES: usize = DEFAULT_BYTES> {
     /// raw pattern
     pub(crate) bytes: Simd<u8, BYTES>,
     /// pattern mask
@@ -44,11 +40,7 @@ where
     phantom: PhantomData<[u8; ALIGNMENT]>,
 }
 
-impl<const ALIGNMENT: usize, const BYTES: usize> Pattern<ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+impl<const ALIGNMENT: usize, const BYTES: usize> Pattern<ALIGNMENT, BYTES> {
     const _ALIGNED: () = {
         if ALIGNMENT > BYTES {
             panic!("Pattern ALIGNMENT must be less or equal to BYTES");
@@ -89,7 +81,7 @@ where
         let mask = u64::MAX.checked_shr(length as u32).unwrap_or(0).not() & mask;
         let bytes = Simd::<u8, BYTES>::from_array(input);
         let mask = Mask::<i8, BYTES>::from_bitmask(mask.reverse_bits());
-        let mask_array = mask.to_int();
+        let mask_array = mask.to_simd();
         let mask_array = mask_array.as_array().as_slice();
 
         let first_byte_offset = find_first_byte_offset::<ALIGNMENT>(mask_array).unwrap();
@@ -237,11 +229,7 @@ const fn find_first_byte_offset<const ALIGNMENT: usize>(
 const fn fill_first_bytes<const ALIGNMENT: usize, const BYTES: usize>(
     chunk: &[u8],
     mask: &[i8],
-) -> (Simd<u8, BYTES>, Mask<i8, BYTES>)
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+) -> (Simd<u8, BYTES>, Mask<i8, BYTES>) {
     let mut first = [0u8; BYTES];
     let mut first_mask = [0i8; BYTES];
 
@@ -268,11 +256,7 @@ where
     (bytes, mask)
 }
 
-impl<const ALIGNMENT: usize, const BYTES: usize> FromStr for Pattern<ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+impl<const ALIGNMENT: usize, const BYTES: usize> FromStr for Pattern<ALIGNMENT, BYTES> {
     type Err = ParsePatternError;
 
     #[inline]

@@ -2,7 +2,7 @@ use core::{
     cmp::min,
     iter::FusedIterator,
     ops::{BitAnd, BitOr},
-    simd::{cmp::SimdPartialEq, LaneCount, Mask, Simd, SupportedLaneCount},
+    simd::{cmp::SimdPartialEq, Mask, Simd},
 };
 
 use crate::{BytesMask, Pattern};
@@ -21,11 +21,7 @@ macro_rules! debug_assert_opt {
 /// An [`Iterator`] for searching a given [`Pattern`] in data
 #[must_use = "Scanner is an iterator and must be consumed to search."]
 #[derive(Clone)]
-pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+pub struct Scanner<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> {
     /// needle
     pattern: &'pattern Pattern<ALIGNMENT, BYTES>,
     /// one bit for each byte in `BYTES`
@@ -47,9 +43,6 @@ where
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// Creates an [`Iterator`] to search in `data`.
     pub fn new(pattern: &'pattern Pattern<ALIGNMENT, BYTES>, data: &'data [u8]) -> Self {
@@ -222,9 +215,6 @@ where
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> Iterator
     for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     type Item = usize;
 
@@ -260,17 +250,11 @@ where
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize> FusedIterator
     for Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
 }
 
 impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     Scanner<'pattern, 'data, ALIGNMENT, BYTES>
-where
-    LaneCount<ALIGNMENT>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
 {
     /// advance the iterator until the next match
     #[inline(always)]
@@ -312,11 +296,7 @@ where
                 #[cold]
                 fn branch<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>(
                     scanner: &mut Scanner<'pattern, 'data, ALIGNMENT, BYTES>,
-                ) -> Option<usize>
-                where
-                    LaneCount<ALIGNMENT>: SupportedLaneCount,
-                    LaneCount<BYTES>: SupportedLaneCount,
-                {
+                ) -> Option<usize> {
                     scanner.exhausted = true;
                     scanner.candidates_mask = unsafe {
                         Scanner::<'pattern, 'data, ALIGNMENT, BYTES>::build_candidates::<false>(

@@ -2,8 +2,6 @@
 
 mod util;
 
-use std::simd::{LaneCount, SupportedLaneCount};
-
 use aligned_vec::avec;
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
 use patterns::Pattern;
@@ -20,10 +18,7 @@ fn avx<const ALIGN: usize, const BYTES: usize>(
     b: &mut Bencher,
     pattern: &Pattern<ALIGN, BYTES>,
     data: &[u8],
-) where
-    LaneCount<ALIGN>: SupportedLaneCount,
-    LaneCount<BYTES>: SupportedLaneCount,
-{
+) {
     b.iter(move || {
         pattern.matches(data).next().unwrap();
     });
