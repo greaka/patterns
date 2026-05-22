@@ -87,6 +87,22 @@ pub const fn hex_to_u8(hex: &str) -> Result<u8, IntErrorKind> {
     Ok(result)
 }
 
+pub const fn trim(s: &str) -> &str {
+    let mut rest = s.as_bytes();
+
+    while !rest.is_empty() && rest[0].is_ascii_whitespace() {
+        (_, rest) = rest.split_at(1);
+    }
+
+    while !rest.is_empty() && rest[rest.len() - 1].is_ascii_whitespace() {
+        (rest, _) = rest.split_at(rest.len() - 1);
+    }
+
+    // # Safety
+    // is_acii_whitespace can never break UTF-8
+    unsafe { str::from_utf8_unchecked(rest) }
+}
+
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {

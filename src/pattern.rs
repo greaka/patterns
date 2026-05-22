@@ -116,7 +116,7 @@ impl<const ALIGNMENT: usize, const BYTES: usize> Pattern<ALIGNMENT, BYTES> {
             reason = "This forces evaluation of the const and emits a compile time error."
         )]
         Self::_ALIGNED;
-        let bytes = const_utils::SplitAsciiWhitespace::new(s);
+        let bytes = const_utils::SplitAsciiWhitespace::new(const_utils::trim(s));
 
         let length = bytes.clone().count();
         if length > BYTES {
