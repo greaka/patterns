@@ -92,7 +92,9 @@ mod target_impl {
     pub(super) const WIDEST: Dispatch = Dispatch::Avx512;
 
     pub(super) fn detect() -> Dispatch {
-        if std::arch::is_x86_feature_detected!("avx512f") {
+        if std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512bw")
+        {
             Dispatch::Avx512
         } else if std::arch::is_x86_feature_detected!("avx2") {
             Dispatch::Avx2

@@ -432,7 +432,7 @@ impl<'pattern, 'data, const ALIGNMENT: usize, const BYTES: usize>
     }
 
     #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
-    #[target_feature(enable = "avx512f")]
+    #[target_feature(enable = "avx512f", enable = "avx512bw")]
     fn next_avx512(&mut self) -> Option<usize> {
         self.next()
     }
